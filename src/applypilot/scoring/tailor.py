@@ -11,6 +11,7 @@ to avoid apologetic spirals.
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -30,6 +31,8 @@ from applypilot.scoring.validator import (
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
+# gemini-2.5-flash uses thinking tokens; full resume JSON is ~4k+ chars
+TAILOR_MAX_TOKENS = int(os.environ.get("TAILOR_MAX_TOKENS", "16384"))
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -400,8 +403,7 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        # gemini-2.5-flash needs headroom for thinking + full resume JSON (~4k chars)
-        raw = client.chat(messages, max_tokens=8192, temperature=0.4)
+        raw = client.chat(messages, max_tokens=TAILOR_MAX_TOKENS, temperature=0.4)
 
         # Parse JSON from response
         try:
