@@ -9,13 +9,67 @@ Auto-detects provider from environment:
 LLM_MODEL env var overrides the model name for any provider.
 """
 
+import json
 import logging
 import os
 import time
+from datetime import datetime
+from typing import IO
 
 import httpx
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Verbose request/response logging
+# ---------------------------------------------------------------------------
+
+_verbose_file: IO | None = None
+_verbose_call_count: int = 0
+
+
+def enable_verbose(phase: str, log_dir: str) -> None:
+    """Open a per-phase log file for LLM request/response logging."""
+    global _verbose_file, _verbose_call_count
+    if _verbose_file:
+        _verbose_file.close()
+    os.makedirs(log_dir, exist_ok=True)
+    date_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(log_dir, f"apply-pilot-{phase}-{date_str}.log")
+    _verbose_file = open(path, "w", encoding="utf-8")
+    _verbose_call_count = 0
+    log.info("Verbose LLM logging → %s", path)
+
+
+def disable_verbose() -> None:
+    global _verbose_file
+    if _verbose_file:
+        _verbose_file.close()
+        _verbose_file = None
+
+
+def _log_request(messages: list[dict]) -> None:
+    global _verbose_call_count
+    if not _verbose_file:
+        return
+    _verbose_call_count += 1
+    ts = datetime.now().strftime("%H:%M:%S")
+    _verbose_file.write(f"{'=' * 60}\n")
+    _verbose_file.write(f"REQUEST #{_verbose_call_count}  [{ts}]\n")
+    _verbose_file.write(f"{'=' * 60}\n")
+    _verbose_file.write(json.dumps(messages, indent=2, ensure_ascii=False))
+    _verbose_file.write("\n\n")
+    _verbose_file.flush()
+
+
+def _log_response(text: str) -> None:
+    if not _verbose_file:
+        return
+    ts = datetime.now().strftime("%H:%M:%S")
+    _verbose_file.write(f"--- RESPONSE #{_verbose_call_count}  [{ts}] ---\n")
+    _verbose_file.write(text)
+    _verbose_file.write("\n\n")
+    _verbose_file.flush()
 
 # ---------------------------------------------------------------------------
 # Provider detection
@@ -199,13 +253,16 @@ class LLMClient:
             if first.get("role") == "user" and not first["content"].startswith("/no_think"):
                 messages = [{"role": first["role"], "content": f"/no_think\n{first['content']}"}] + messages[1:]
 
+        _log_request(messages)
         for attempt in range(_MAX_RETRIES):
             try:
                 # Route to native Gemini if we've already confirmed it's needed
                 if self._use_native_gemini:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
-
-                return self._chat_compat(messages, temperature, max_tokens)
+                    result = self._chat_native_gemini(messages, temperature, max_tokens)
+                else:
+                    result = self._chat_compat(messages, temperature, max_tokens)
+                _log_response(result)
+                return result
 
             except _GeminiCompatForbidden as exc:
                 # Model not available on OpenAI-compat layer — switch to native.
@@ -218,7 +275,9 @@ class LLMClient:
                 self._use_native_gemini = True
                 # Retry immediately with native — don't count as a rate-limit wait
                 try:
-                    return self._chat_native_gemini(messages, temperature, max_tokens)
+                    result = self._chat_native_gemini(messages, temperature, max_tokens)
+                    _log_response(result)
+                    return result
                 except httpx.HTTPStatusError as native_exc:
                     raise RuntimeError(
                         f"Both Gemini endpoints failed. Compat: 403 Forbidden. "

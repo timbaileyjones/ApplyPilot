@@ -400,7 +400,8 @@ def tailor_resume(
             {"role": "user", "content": f"ORIGINAL RESUME:\n{resume_text}\n\n---\n\nTARGET JOB:\n{job_text}\n\nReturn the JSON:"},
         ]
 
-        raw = client.chat(messages, max_tokens=2048, temperature=0.4)
+        # gemini-2.5-flash needs headroom for thinking + full resume JSON (~4k chars)
+        raw = client.chat(messages, max_tokens=8192, temperature=0.4)
 
         # Parse JSON from response
         try:
@@ -450,6 +451,8 @@ def tailor_resume(
         return tailored, report
 
     report["status"] = "exhausted_retries"
+    if avoid_notes:
+        report["issues"] = avoid_notes
     return tailored, report
 
 

@@ -87,6 +87,7 @@ def run(
     workers: int = typer.Option(1, "--workers", "-w", help="Parallel threads for discovery/enrichment stages."),
     stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Log every LLM request/response to .applypilot/logs/apply-pilot-<stage>-<date>.log."),
     validation: str = typer.Option(
         "normal",
         "--validation",
@@ -136,6 +137,7 @@ def run(
         stream=stream,
         workers=workers,
         validation_mode=validation,
+        verbose=verbose,
     )
 
     if result.get("errors"):

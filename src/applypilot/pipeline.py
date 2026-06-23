@@ -324,7 +324,7 @@ def _run_stage_streaming(
 # ---------------------------------------------------------------------------
 
 def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
-                    validation_mode: str = "normal") -> dict:
+                    validation_mode: str = "normal", verbose: bool = False) -> dict:
     """Execute stages one at a time (original behavior)."""
     results: list[dict] = []
     errors: dict[str, str] = {}
@@ -339,6 +339,11 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
 
         t0 = time.time()
         runner = _STAGE_RUNNERS[name]
+
+        if verbose:
+            from applypilot.llm import enable_verbose
+            from applypilot.config import LOG_DIR
+            enable_verbose(name, str(LOG_DIR))
 
         try:
             kwargs: dict = {}
@@ -366,6 +371,10 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
             status = f"error: {e}"
             log.exception("Stage '%s' crashed", name)
             console.print(f"\n  [red]STAGE FAILED:[/red] {e}")
+        finally:
+            if verbose:
+                from applypilot.llm import disable_verbose
+                disable_verbose()
 
         results.append({"stage": name, "status": status, "elapsed": elapsed})
         if status not in ("ok", "partial"):
@@ -448,6 +457,7 @@ def run_pipeline(
     stream: bool = False,
     workers: int = 1,
     validation_mode: str = "normal",
+    verbose: bool = False,
 ) -> dict:
     """Run pipeline stages.
 
@@ -501,7 +511,7 @@ def run_pipeline(
                                 validation_mode=validation_mode)
     else:
         result = _run_sequential(ordered, min_score, workers=workers,
-                                 validation_mode=validation_mode)
+                                 validation_mode=validation_mode, verbose=verbose)
 
     # Summary table
     console.print(f"\n{'=' * 70}")
