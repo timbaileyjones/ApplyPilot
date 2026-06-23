@@ -9,6 +9,7 @@ is always code-injected, never LLM-generated. Each retry starts a fresh conversa
 to avoid apologetic spirals.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -495,10 +496,11 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             tailored, report = tailor_resume(resume_text, job, profile,
                                              validation_mode=validation_mode)
 
-            # Build safe filename prefix
+            # Build safe filename prefix — URL hash ensures uniqueness across same-title jobs
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            url_hash = hashlib.md5(job["url"].encode()).hexdigest()[:8]
+            prefix = f"{safe_site}_{safe_title}_{url_hash}"
 
             # Save tailored resume text
             txt_path = TAILORED_DIR / f"{prefix}.txt"
@@ -560,22 +562,21 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             result["title"][:40],
         )
 
-    # Persist to DB: increment attempt counter for ALL, save path only for approved
-    now = datetime.now(timezone.utc).isoformat()
-    _success_statuses = {"approved", "approved_with_judge_warning"}
-    for r in results:
-        if r["status"] in _success_statuses:
+        # Persist immediately so aborts don't lose progress
+        now = datetime.now(timezone.utc).isoformat()
+        _success_statuses = {"approved", "approved_with_judge_warning"}
+        if result["status"] in _success_statuses:
             conn.execute(
                 "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
                 "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["path"], now, r["url"]),
+                (result["path"], now, result["url"]),
             )
         else:
             conn.execute(
                 "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["url"],),
+                (result["url"],),
             )
-    conn.commit()
+        conn.commit()
 
     elapsed = time.time() - t0
     log.info(

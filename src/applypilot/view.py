@@ -76,7 +76,8 @@ def generate_dashboard(output_path: str | None = None) -> str:
     jobs = conn.execute("""
         SELECT url, title, salary, description, location, site, strategy,
                full_description, application_url, detail_error,
-               fit_score, score_reasoning
+               fit_score, score_reasoning,
+               tailored_resume_path, cover_letter_path
         FROM jobs
         WHERE fit_score >= 5
         ORDER BY fit_score DESC, site, title
@@ -178,6 +179,34 @@ def generate_dashboard(output_path: str | None = None) -> str:
         if apply_url:
             apply_html = f'<a href="{apply_url}" class="apply-link" target="_blank">Apply</a>'
 
+        # Build file:/// links for all generated documents
+        doc_links: list[str] = []
+        resume_path = j["tailored_resume_path"]
+        if resume_path:
+            txt = Path(resume_path)
+            stem = txt.stem
+            parent = txt.parent
+            pdf = txt.with_suffix(".pdf")
+            if pdf.exists():
+                doc_links.append(f'<a href="file://{pdf}" class="doc-link doc-pdf" target="_blank">Resume PDF</a>')
+            if txt.exists():
+                doc_links.append(f'<a href="file://{txt}" class="doc-link doc-txt" target="_blank">Resume TXT</a>')
+            job_file = parent / f"{stem}_JOB.txt"
+            if job_file.exists():
+                doc_links.append(f'<a href="file://{job_file}" class="doc-link doc-job" target="_blank">Job</a>')
+            report_file = parent / f"{stem}_REPORT.json"
+            if report_file.exists():
+                doc_links.append(f'<a href="file://{report_file}" class="doc-link doc-report" target="_blank">Report</a>')
+        cl_path = j["cover_letter_path"]
+        if cl_path:
+            cl_txt = Path(cl_path)
+            cl_pdf = cl_txt.with_suffix(".pdf")
+            if cl_pdf.exists():
+                doc_links.append(f'<a href="file://{cl_pdf}" class="doc-link doc-cl" target="_blank">Cover Letter PDF</a>')
+            elif cl_txt.exists():
+                doc_links.append(f'<a href="file://{cl_txt}" class="doc-link doc-cl" target="_blank">Cover Letter TXT</a>')
+        docs_html = f'<div class="doc-links">{"".join(doc_links)}</div>' if doc_links else ""
+
         job_sections += f"""
         <div class="job-card" data-score="{score}" data-site="{escape(j['site'] or '')}" data-location="{location.lower()}">
           <div class="card-header">
@@ -189,7 +218,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
           {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ''}
           <p class="desc-preview">{desc_preview}...</p>
           {"<details class='full-desc-details'><summary class='expand-btn'>Full Description (" + f'{desc_len:,}' + " chars)</summary><div class='full-desc'>" + full_desc_html + "</div></details>" if j["full_description"] else ""}
-          <div class="card-footer">{apply_html}</div>
+          <div class="card-footer">{docs_html}{apply_html}</div>
         </div>"""
 
     if current_score is not None:
@@ -200,7 +229,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ApplyPilot Dashboard</title>
+<title>Tim's ApplyPilot Dashboard</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; padding: 2rem; }}
@@ -277,9 +306,16 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
   .desc-preview {{ font-size: 0.8rem; color: #64748b; line-height: 1.5; margin-bottom: 0.75rem; max-height: 3.6em; overflow: hidden; }}
 
-  .card-footer {{ display: flex; justify-content: flex-end; }}
+  .card-footer {{ display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }}
   .apply-link {{ font-size: 0.8rem; color: #60a5fa; text-decoration: none; padding: 0.3rem 0.8rem; border: 1px solid #60a5fa33; border-radius: 6px; font-weight: 500; }}
   .apply-link:hover {{ background: #60a5fa22; }}
+  .doc-links {{ display: flex; flex-wrap: wrap; gap: 0.4rem; }}
+  .doc-link {{ font-size: 0.72rem; text-decoration: none; padding: 0.2rem 0.55rem; border-radius: 4px; font-weight: 500; border: 1px solid transparent; }}
+  .doc-pdf   {{ color: #a78bfa; border-color: #a78bfa44; }}  .doc-pdf:hover   {{ background: #a78bfa22; }}
+  .doc-txt   {{ color: #94a3b8; border-color: #94a3b844; }}  .doc-txt:hover   {{ background: #94a3b822; }}
+  .doc-cl    {{ color: #f9a8d4; border-color: #f9a8d444; }}  .doc-cl:hover    {{ background: #f9a8d422; }}
+  .doc-job   {{ color: #6ee7b7; border-color: #6ee7b744; }}  .doc-job:hover   {{ background: #6ee7b722; }}
+  .doc-report{{ color: #fbbf24; border-color: #fbbf2444; }}  .doc-report:hover{{ background: #fbbf2422; }}
 
   /* Expandable full description */
   .full-desc-details {{ margin-bottom: 0.75rem; }}
@@ -301,7 +337,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
 </head>
 <body>
 
-<h1>ApplyPilot Dashboard</h1>
+<h1>Tim's ApplyPilot Dashboard</h1>
 <p class="subtitle">{total} jobs &middot; {scored} scored &middot; {high_fit} strong matches (7+)</p>
 
 <div class="summary">

@@ -126,10 +126,12 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     # Collect all text for bulk checks
     all_text_parts: list[str] = [data["summary"]]
 
-    # Skills: check for fabrication (always enforced)
+    # Skills: check for fabrication (always enforced), excluding skills the user actually has
+    allowed_skills = _build_skills_set(profile)
+    effective_watchlist = {f for f in FABRICATION_WATCHLIST if f not in allowed_skills}
     if isinstance(data["skills"], dict):
         skills_text = " ".join(str(v) for v in data["skills"].values()).lower()
-        for fake in FABRICATION_WATCHLIST:
+        for fake in effective_watchlist:
             if len(fake) <= 2:
                 continue
             if fake in skills_text:
@@ -246,11 +248,13 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
         warnings.append("Phone missing -- will be injected")
 
     # 7. Scan TECHNICAL SKILLS section for fabricated tools
+    allowed_skills = _build_skills_set(profile)
+    effective_watchlist = {f for f in FABRICATION_WATCHLIST if f not in allowed_skills}
     skills_start = text_lower.find("technical skills")
     skills_end = text_lower.find("experience", skills_start) if skills_start != -1 else -1
     if skills_start != -1 and skills_end != -1:
         skills_block = text_lower[skills_start:skills_end]
-        for fake in FABRICATION_WATCHLIST:
+        for fake in effective_watchlist:
             if len(fake) <= 2:
                 continue
             if fake in skills_block:
@@ -259,7 +263,7 @@ def validate_tailored_resume(text: str, profile: dict, original_text: str = "") 
     # 8. Scan full document for fabrication watchlist items not in original
     if original_text:
         original_lower = original_text.lower()
-        for fake in FABRICATION_WATCHLIST:
+        for fake in effective_watchlist:
             if len(fake) <= 2:
                 continue
             if fake in text_lower and fake not in original_lower:
