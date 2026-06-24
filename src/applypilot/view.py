@@ -80,7 +80,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
                tailored_resume_path, cover_letter_path
         FROM jobs
         WHERE fit_score >= 5
-        ORDER BY fit_score DESC, site, title
+        ORDER BY fit_score DESC, company, salary DESC
     """).fetchall()
 
     # Color map per site
