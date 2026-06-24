@@ -5,8 +5,10 @@ postings. All personal data (name, skills, achievements) comes from the user's
 profile at runtime. No hardcoded personal information.
 """
 
+import hashlib
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -24,6 +26,7 @@ from applypilot.scoring.validator import (
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
+COVER_LETTER_MAX_TOKENS = int(os.environ.get("COVER_LETTER_MAX_TOKENS", "4096"))
 
 
 # ── Prompt Builder (profile-driven) ──────────────────────────────────────
@@ -165,7 +168,7 @@ def generate_cover_letter(
             )},
         ]
 
-        letter = client.chat(messages, max_tokens=1024, temperature=0.7)
+        letter = client.chat(messages, max_tokens=COVER_LETTER_MAX_TOKENS, temperature=0.7)
         letter = sanitize_text(letter)  # auto-fix em dashes, smart quotes
         letter = _strip_preamble(letter)  # remove any "Here is the letter:" prefix
 
@@ -237,10 +240,11 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
 
-            # Build safe filename prefix
+            # Build safe filename prefix — URL hash ensures uniqueness across same-title jobs
             safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
             safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            url_hash = hashlib.md5(job["url"].encode()).hexdigest()[:8]
+            prefix = f"{safe_site}_{safe_title}_{url_hash}"
 
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
