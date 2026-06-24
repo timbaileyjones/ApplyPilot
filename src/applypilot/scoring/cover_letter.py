@@ -231,8 +231,9 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     )
     t0 = time.time()
     completed = 0
-    results: list[dict] = []
     error_count = 0
+    saved = 0
+    now = datetime.now(timezone.utc).isoformat()
 
     for job in jobs:
         completed += 1
@@ -257,47 +258,28 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 
-            result = {
-                "url": job["url"],
-                "path": str(cl_path),
-                "pdf_path": pdf_path,
-                "title": job["title"],
-                "site": job["site"],
-            }
-            results.append(result)
+            conn.execute(
+                "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
+                "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+                (str(cl_path), now, job["url"]),
+            )
+            conn.commit()
+            saved += 1
 
             elapsed = time.time() - t0
             rate = completed / elapsed if elapsed > 0 else 0
             log.info(
                 "%d/%d [OK] | %.1f jobs/min | %s",
-                completed, len(jobs), rate * 60, result["title"][:40],
+                completed, len(jobs), rate * 60, job["title"][:40],
             )
         except Exception as e:
-            result = {
-                "url": job["url"], "title": job["title"], "site": job["site"],
-                "path": None, "pdf_path": None, "error": str(e),
-            }
-            error_count += 1
-            results.append(result)
-            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
-
-    # Persist to DB: increment attempt counter for ALL, save path only for successes
-    now = datetime.now(timezone.utc).isoformat()
-    saved = 0
-    for r in results:
-        if r.get("path"):
-            conn.execute(
-                "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
-                "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (r["path"], now, r["url"]),
-            )
-            saved += 1
-        else:
             conn.execute(
                 "UPDATE jobs SET cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (r["url"],),
+                (job["url"],),
             )
-    conn.commit()
+            conn.commit()
+            error_count += 1
+            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
 
     elapsed = time.time() - t0
     log.info("Cover letters done in %.1fs: %d generated, %d errors", elapsed, saved, error_count)
