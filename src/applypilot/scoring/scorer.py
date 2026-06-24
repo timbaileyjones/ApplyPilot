@@ -12,7 +12,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import RESUME_PATH, load_profile
+from applypilot.config import RESUME_PATH, load_profile as _load_profile
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 
@@ -20,8 +20,8 @@ log = logging.getLogger(__name__)
 
 SCORE_MAX_TOKENS = int(os.environ.get("SCORE_MAX_TOKENS", "2048"))
 
-# Jobs whose annual equivalent salary is below this floor are auto-scored 0.
-SALARY_FLOOR = 160_000
+# Fallback floor when profile doesn't specify one.
+_DEFAULT_SALARY_FLOOR = 160_000
 
 # Sites/companies exempt from the salary floor (task-based gig platforms).
 _SALARY_FLOOR_EXEMPT = frozenset({"mercor"})
@@ -140,7 +140,7 @@ def _parse_score_response(response: str) -> dict:
             "keywords": keywords, "reasoning": reasoning}
 
 
-def score_job(resume_text: str, job: dict) -> dict:
+def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_FLOOR) -> dict:
     """Score a single job against the resume.
 
     Args:
@@ -171,7 +171,7 @@ def score_job(resume_text: str, job: dict) -> dict:
         if not _is_exempt(job):
             effective_salary = result["salary"] or job.get("salary")
             annual = _max_annual_salary(effective_salary)
-            if annual is not None and annual < SALARY_FLOOR:
+            if annual is not None and annual < salary_floor:
                 log.info(
                     "Salary floor: zeroing '%s' (salary=%s, annual≈$%d)",
                     job.get("title", "?")[:50], effective_salary, annual,
@@ -195,6 +195,9 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    profile = _load_profile()
+    salary_floor = int(profile.get("compensation", {}).get("salary_floor", _DEFAULT_SALARY_FLOOR))
+    log.info("Salary floor: $%d/year (from profile)", salary_floor)
     conn = get_connection()
 
     if rescore:
@@ -221,7 +224,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     results: list[dict] = []
 
     for job in jobs:
-        result = score_job(resume_text, job)
+        result = score_job(resume_text, job, salary_floor=salary_floor)
         result["url"] = job["url"]
         completed += 1
 
