@@ -74,7 +74,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
     # All scored jobs (5+), ordered by score desc
     jobs = conn.execute("""
-        SELECT url, title, salary, description, location, site, strategy,
+        SELECT url, title, salary, company, description, location, site, strategy,
                full_description, application_url, detail_error,
                fit_score, score_reasoning,
                tailored_resume_path, cover_letter_path
@@ -149,6 +149,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
         title = escape(j["title"] or "Untitled")
         url = escape(j["url"] or "")
+        company = escape(j["company"] or "")
         salary = escape(j["salary"] or "")
         location = escape(j["location"] or "")
         site = escape(j["site"] or "")
@@ -213,6 +214,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
             <span class="score-pill" style="background:{'#10b981' if score >= 7 else '#f59e0b'}">{score}</span>
             <a href="{url}" class="job-title" target="_blank">{title}</a>
           </div>
+          {f'<div class="company-name">{company}</div>' if company else ''}
           <div class="meta-row">{meta_html}</div>
           {f'<div class="keywords-row">{escape(keywords)}</div>' if keywords else ''}
           {f'<div class="reasoning-row">{escape(reasoning)}</div>' if reasoning else ''}
@@ -295,6 +297,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
 
   .job-title {{ color: #e2e8f0; text-decoration: none; font-weight: 600; font-size: 0.95rem; }}
   .job-title:hover {{ color: #60a5fa; }}
+  .company-name {{ font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.35rem; font-style: italic; }}
 
   .meta-row {{ display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.4rem; }}
   .meta-tag {{ font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: #334155; color: #94a3b8; }}
