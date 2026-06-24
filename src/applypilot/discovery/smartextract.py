@@ -14,6 +14,7 @@ placeholders replaced from the user's search configuration.
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -34,6 +35,8 @@ from applypilot.database import get_connection, init_db, store_jobs, get_stats
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
+
+EXTRACT_MAX_TOKENS = int(os.environ.get("EXTRACT_MAX_TOKENS", "2048"))
 
 # Fix Windows encoding -- prevents charmap errors on emoji/unicode in job titles
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -393,7 +396,7 @@ def judge_api_responses(api_responses: list[dict]) -> list[dict]:
         )
 
         try:
-            raw = client.ask(prompt, temperature=0.0, max_tokens=1024)
+            raw = client.ask(prompt, temperature=0.0, max_tokens=EXTRACT_MAX_TOKENS)
             verdict = extract_json(raw)
             is_relevant = verdict.get("relevant", False)
             reason = verdict.get("reason", "?")

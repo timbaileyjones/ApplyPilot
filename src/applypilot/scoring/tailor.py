@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
 # gemini-2.5-flash uses thinking tokens; full resume JSON is ~4k+ chars
 TAILOR_MAX_TOKENS = int(os.environ.get("TAILOR_MAX_TOKENS", "16384"))
+JUDGE_MAX_TOKENS = int(os.environ.get("JUDGE_MAX_TOKENS", "2048"))
 
 
 # ── Prompt Builders (profile-driven) ──────────────────────────────────────
@@ -330,7 +331,7 @@ def judge_tailored_resume(
     ]
 
     client = get_client()
-    response = client.chat(messages, max_tokens=512, temperature=0.1)
+    response = client.chat(messages, max_tokens=JUDGE_MAX_TOKENS, temperature=0.1)
 
     passed = "VERDICT: PASS" in response.upper()
     issues = "none"

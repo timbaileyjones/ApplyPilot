@@ -7,6 +7,7 @@ profile and resume file.
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
+
+SCORE_MAX_TOKENS = int(os.environ.get("SCORE_MAX_TOKENS", "2048"))
 
 
 # ── Scoring Prompt ────────────────────────────────────────────────────────
@@ -94,7 +97,7 @@ def score_job(resume_text: str, job: dict) -> dict:
 
     try:
         client = get_client()
-        response = client.chat(messages, max_tokens=512, temperature=0.2)
+        response = client.chat(messages, max_tokens=SCORE_MAX_TOKENS, temperature=0.2)
         return _parse_score_response(response)
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)

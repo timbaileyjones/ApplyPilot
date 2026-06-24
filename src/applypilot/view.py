@@ -280,7 +280,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .score-badge {{ display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 8px; color: #0f172a; font-weight: 700; font-size: 1rem; }}
 
   /* Job grid */
-  .job-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1rem; }}
+  .job-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }}
 
   .job-card {{ background: #1e293b; border-radius: 10px; padding: 1rem; border-left: 3px solid #334155; transition: all 0.15s; }}
   .job-card:hover {{ transform: translateY(-2px); box-shadow: 0 4px 12px #00000044; }}
@@ -304,7 +304,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .keywords-row {{ font-size: 0.75rem; color: #10b981; margin-bottom: 0.3rem; line-height: 1.4; }}
   .reasoning-row {{ font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.5rem; font-style: italic; line-height: 1.4; }}
 
-  .desc-preview {{ font-size: 0.8rem; color: #64748b; line-height: 1.5; margin-bottom: 0.75rem; max-height: 3.6em; overflow: hidden; }}
+  .desc-preview {{ font-size: 0.8rem; color: #64748b; line-height: 1.5; margin-bottom: 0.75rem; }}
 
   .card-footer {{ display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }}
   .apply-link {{ font-size: 0.8rem; color: #60a5fa; text-decoration: none; padding: 0.3rem 0.8rem; border: 1px solid #60a5fa33; border-radius: 6px; font-weight: 500; }}
@@ -322,11 +322,14 @@ def generate_dashboard(output_path: str | None = None) -> str:
   .expand-btn {{ font-size: 0.8rem; color: #60a5fa; cursor: pointer; list-style: none; padding: 0.3rem 0; }}
   .expand-btn::-webkit-details-marker {{ display: none; }}
   .expand-btn:hover {{ color: #93c5fd; }}
-  .full-desc {{ font-size: 0.8rem; color: #cbd5e1; line-height: 1.6; margin-top: 0.5rem; padding: 0.75rem; background: #0f172a; border-radius: 8px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }}
+  .full-desc {{ font-size: 0.8rem; color: #cbd5e1; line-height: 1.6; margin-top: 0.5rem; padding: 0.75rem; background: #0f172a; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }}
 
   .hidden {{ display: none !important; }}
   .job-count {{ color: #94a3b8; font-size: 0.85rem; margin-bottom: 1rem; }}
 
+  @media (max-width: 1200px) {{
+    .job-grid {{ grid-template-columns: repeat(2, 1fr); }}
+  }}
   @media (max-width: 768px) {{
     .summary {{ grid-template-columns: repeat(2, 1fr); }}
     .score-section {{ grid-template-columns: 1fr; }}
@@ -355,6 +358,7 @@ def generate_dashboard(output_path: str | None = None) -> str:
   <button class="filter-btn" onclick="filterScore(9)">9+ Perfect</button>
   <span class="filter-label" style="margin-left:1rem">Search:</span>
   <input type="text" class="search-input" placeholder="Filter by title, site..." oninput="filterText(this.value)">
+  <button class="filter-btn" style="margin-left:auto" onclick="expandAll()">Expand All Descriptions</button>
 </div>
 
 <div class="score-section">
@@ -418,6 +422,10 @@ function applyFilters() {{
 }}
 
 applyFilters();
+
+function expandAll() {{
+  document.querySelectorAll('details.full-desc-details').forEach(d => d.open = true);
+}}
 </script>
 
 </body>
