@@ -20,6 +20,62 @@ log = logging.getLogger(__name__)
 
 SCORE_MAX_TOKENS = int(os.environ.get("SCORE_MAX_TOKENS", "2048"))
 
+# Jobs whose annual equivalent salary is below this floor are auto-scored 0.
+SALARY_FLOOR = 160_000
+
+# Sites/companies exempt from the salary floor (task-based gig platforms).
+_SALARY_FLOOR_EXEMPT = frozenset({"mercor"})
+
+
+def _normalize_salary(salary: str) -> str:
+    """Zero-pad sub-100k figures so text-based sort stays numeric.
+
+    "$95k" → "$095k", "$80k-$120k" → "$080k-$120k", "$100k+" unchanged.
+    """
+    return re.sub(r'\b(\d{1,2})(k)', lambda m: f"{int(m.group(1)):03d}{m.group(2)}", salary, flags=re.IGNORECASE)
+
+
+def _is_exempt(job: dict) -> bool:
+    """Return True if the job is on a task-based platform exempt from the salary floor."""
+    site = (job.get("site") or "").lower()
+    url = (job.get("url") or "").lower()
+    return any(s in site or s in url for s in _SALARY_FLOOR_EXEMPT)
+
+
+def _max_annual_salary(salary_str: str | None) -> int | None:
+    """Parse a salary string and return the maximum annual equivalent in dollars.
+
+    Returns None when the string is absent or too ambiguous to classify
+    (e.g. a bare number with no time-unit hint), so the floor rule is skipped.
+    """
+    if not salary_str:
+        return None
+    s = salary_str.lower()
+
+    # Pull every number+optional-k from the string (handles ranges like "$120k-$150k")
+    raw = re.findall(r'(\d[\d,]*)(\s*k)?', s)
+    values = []
+    for digits, k in raw:
+        try:
+            val = float(digits.replace(",", ""))
+            if k.strip():
+                val *= 1_000
+            values.append(val)
+        except ValueError:
+            continue
+    if not values:
+        return None
+
+    peak = max(values)
+
+    if re.search(r'/\s*h(?:r|our)?|per\s+hour|hourly', s):
+        return int(peak * 2_080)  # 40 hrs/week × 52 weeks
+    if re.search(r'/\s*y(?:r|ear)|annual(?:ly)?|per\s+year|per\s+annum', s):
+        return int(peak)
+    if peak >= 30_000:  # unambiguously annual (nobody makes $30k/hr)
+        return int(peak)
+    return None  # small bare number with no unit — don't guess
+
 
 # ── Scoring Prompt ────────────────────────────────────────────────────────
 
@@ -74,7 +130,7 @@ def _parse_score_response(response: str) -> dict:
             company = val if val and val.lower() != "unknown" else None
         elif line.startswith("SALARY:"):
             val = line.replace("SALARY:", "").strip()
-            salary = val if val and val.lower() != "not specified" else None
+            salary = _normalize_salary(val) if val and val.lower() != "not specified" else None
         elif line.startswith("KEYWORDS:"):
             keywords = line.replace("KEYWORDS:", "").strip()
         elif line.startswith("REASONING:"):
@@ -109,10 +165,23 @@ def score_job(resume_text: str, job: dict) -> dict:
     try:
         client = get_client()
         response = client.chat(messages, max_tokens=SCORE_MAX_TOKENS, temperature=0.2)
-        return _parse_score_response(response)
+        result = _parse_score_response(response)
+
+        # Salary floor: override score to 0 for sub-$160k roles (exempt gig platforms)
+        if not _is_exempt(job):
+            effective_salary = result["salary"] or job.get("salary")
+            annual = _max_annual_salary(effective_salary)
+            if annual is not None and annual < SALARY_FLOOR:
+                log.info(
+                    "Salary floor: zeroing '%s' (salary=%s, annual≈$%d)",
+                    job.get("title", "?")[:50], effective_salary, annual,
+                )
+                result["score"] = 0
+
+        return result
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)
-        return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}"}
+        return {"score": 0, "company": None, "salary": None, "keywords": "", "reasoning": f"LLM error: {e}"}
 
 
 def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
