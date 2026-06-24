@@ -77,6 +77,21 @@ def _max_annual_salary(salary_str: str | None) -> int | None:
     return None  # small bare number with no unit — don't guess
 
 
+# Matches salary patterns in free text: "$120k", "$75/hr", "85,000 CAD", "120,000 - 150,000"
+_SALARY_RE = re.compile(
+    r'\$\s*\d[\d,]*(?:\.\d+)?\s*k?'           # $120k, $85,000
+    r'|\d[\d,]*(?:\.\d+)?\s*k?\s*(?:CAD|USD|AUD|GBP|EUR)'  # 85,000 CAD
+    r'|\d[\d,]*\s*(?:-|to|–)\s*\d[\d,]*\s*(?:CAD|USD|AUD|GBP|EUR|k\b)',  # 75,000 - 85,000 CAD
+    re.IGNORECASE,
+)
+
+
+def _find_salary_in_description(text: str) -> str | None:
+    """Extract the first recognisable salary snippet from a job description."""
+    m = _SALARY_RE.search(text or "")
+    return m.group(0).strip() if m else None
+
+
 # ── Scoring Prompt ────────────────────────────────────────────────────────
 
 SCORE_PROMPT = """You are a job fit evaluator. Given a candidate's resume and a job description, score how well the candidate fits the role.
@@ -157,17 +172,22 @@ def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_F
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
 
-    # Salary floor pre-check: skip the API call entirely if discovery already
-    # populated a salary we can parse and it's below the floor.
+    # Salary floor pre-check: skip the API call if we can already determine
+    # the salary is below the floor — from the DB field or the description text.
     if not _is_exempt(job):
-        discovery_salary = job.get("salary")
-        annual = _max_annual_salary(discovery_salary)
+        known_salary = (
+            job.get("salary")
+            or _find_salary_in_description(job.get("full_description"))
+        )
+        annual = _max_annual_salary(known_salary)
         if annual is not None and annual < salary_floor:
             log.info(
-                "Salary floor (pre-check): skipping AI for '%s' (salary=%s, annual≈$%d)",
-                job.get("title", "?")[:50], discovery_salary, annual,
+                "Salary floor: skipping AI for '%s' (salary=%s, annual≈$%d)",
+                job.get("title", "?")[:50], known_salary, annual,
             )
-            return {"score": 0, "company": None, "salary": _normalize_salary(discovery_salary), "keywords": "", "reasoning": "Below salary floor"}
+            return {"score": 0, "company": None,
+                    "salary": _normalize_salary(known_salary), "keywords": "",
+                    "reasoning": "Below salary floor"}
 
     messages = [
         {"role": "system", "content": SCORE_PROMPT},
@@ -177,19 +197,7 @@ def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_F
     try:
         client = get_client()
         response = client.chat(messages, max_tokens=SCORE_MAX_TOKENS, temperature=0.2)
-        result = _parse_score_response(response)
-
-        # Post-check: apply floor to salary extracted from full description
-        if not _is_exempt(job):
-            annual = _max_annual_salary(result["salary"])
-            if annual is not None and annual < salary_floor:
-                log.info(
-                    "Salary floor (post-check): zeroing '%s' (salary=%s, annual≈$%d)",
-                    job.get("title", "?")[:50], result["salary"], annual,
-                )
-                result["score"] = 0
-
-        return result
+        return _parse_score_response(response)
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)
         return {"score": 0, "company": None, "salary": None, "keywords": "", "reasoning": f"LLM error: {e}"}
