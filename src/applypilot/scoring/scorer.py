@@ -92,6 +92,91 @@ def _find_salary_in_description(text: str) -> str | None:
     return m.group(0).strip() if m else None
 
 
+# ── Country filtering ────────────────────────────────────────────────────
+
+# Ordered list of (compiled regex, ISO-3166-1 alpha-2 code).
+# US patterns are first so "US, CA, Remote" is caught before the CA/Canada patterns.
+_COUNTRY_PATTERNS: list[tuple[re.Pattern, str]] = [(re.compile(p, re.I), c) for p, c in [
+    # United States — explicit markers
+    (r'\b(united\s+states|u\.s\.a\.?)\b',                  "US"),
+    (r'\busa\b',                                            "US"),
+    (r'(?:^|[\s,\-–/])(us)(?:[\s,\-–/]|$)',               "US"),  # bare "US" as a token
+    # Canada — full name, CAN prefix, provinces
+    (r'\b(canada|canadian)\b',                              "CA"),
+    (r'\bcan\b',                                            "CA"),  # "CAN, Ontario"
+    (r'\b(ontario|quebec|québec|british\s+columbia|alberta'
+     r'|manitoba|saskatchewan|nova\s+scotia|new\s+brunswick'
+     r'|newfoundland|nunavut|yukon|northwest\s+territories'
+     r'|prince\s+edward\s+island)\b',                      "CA"),
+    # United Kingdom
+    (r'\b(united\s+kingdom|england|scotland|wales|northern\s+ireland)\b', "GB"),
+    (r'\buk\b',                                             "GB"),
+    # Rest of world (alphabetical by code)
+    (r'\baustralia\b',                                      "AU"),
+    (r'\baustria\b',                                        "AT"),
+    (r'\bbrazil\b',                                         "BR"),
+    (r'\bchile\b',                                          "CL"),
+    (r'\bchina\b',                                          "CN"),
+    (r'\bcolombia\b',                                       "CO"),
+    (r'\bdenmark\b',                                        "DK"),
+    (r'\b(finland|suomi)\b',                               "FI"),
+    (r'\bfrance\b',                                         "FR"),
+    (r'\b(germany|deutschland)\b',                          "DE"),
+    (r'\bhong\s+kong\b',                                    "HK"),
+    (r'\bisrael\b',                                         "IL"),
+    (r'\bindia\b',                                          "IN"),
+    (r'\bireland\b',                                        "IE"),
+    (r'\bitaly\b',                                          "IT"),
+    (r'\bjapan\b',                                          "JP"),
+    (r'\b(south\s+korea|korea)\b',                          "KR"),
+    (r'\bmexico\b',                                         "MX"),
+    (r'\b(malaysia)\b',                                     "MY"),
+    (r'\b(netherlands|holland)\b',                          "NL"),
+    (r'\bnew\s+zealand\b',                                  "NZ"),
+    (r'\bnigeria\b',                                        "NG"),
+    (r'\bnorway\b',                                         "NO"),
+    (r'\bpakistan\b',                                       "PK"),
+    (r'\bphilippines\b',                                    "PH"),
+    (r'\bpoland\b',                                         "PL"),
+    (r'\bportugal\b',                                       "PT"),
+    (r'\bsaudi\s+arabia\b',                                 "SA"),
+    (r'\bsingapore\b',                                      "SG"),
+    (r'\bsouth\s+africa\b',                                 "ZA"),
+    (r'\bspain\b',                                          "ES"),
+    (r'\bsweden\b',                                         "SE"),
+    (r'\bswitzerland\b',                                    "CH"),
+    (r'\btaiwan\b',                                         "TW"),
+    (r'\bthailand\b',                                       "TH"),
+    (r'\bvietnam\b',                                        "VN"),
+]]
+
+# Aliases used to normalise home_countries profile values → ISO codes
+_COUNTRY_ALIASES: dict[str, str] = {
+    "us": "US", "usa": "US", "u.s.": "US", "u.s.a.": "US", "united states": "US",
+    "ca": "CA", "canada": "CA",
+    "gb": "GB", "uk": "GB", "united kingdom": "GB",
+    "au": "AU", "australia": "AU",
+}
+
+
+def _detect_job_country(location: str | None) -> str | None:
+    """Return ISO country code from a location string, or None if ambiguous."""
+    if not location:
+        return None
+    for pattern, code in _COUNTRY_PATTERNS:
+        if pattern.search(location):
+            return code
+    return None
+
+
+def _normalize_home_countries(home_countries: list[str]) -> frozenset[str]:
+    """Convert profile home_countries list to a frozenset of ISO codes."""
+    codes: set[str] = set()
+    for hc in home_countries:
+        codes.add(_COUNTRY_ALIASES.get(hc.lower(), hc.upper()))
+    return frozenset(codes)
+
+
 # ── Scoring Prompt ────────────────────────────────────────────────────────
 
 SCORE_PROMPT = """You are a job fit evaluator. Given a candidate's resume and a job description, score how well the candidate fits the role.
@@ -155,7 +240,8 @@ def _parse_score_response(response: str) -> dict:
             "keywords": keywords, "reasoning": reasoning}
 
 
-def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_FLOOR) -> dict:
+def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_FLOOR,
+              home_country_codes: frozenset[str] = frozenset({"US"})) -> dict:
     """Score a single job against the resume.
 
     Args:
@@ -171,6 +257,17 @@ def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_F
         f"LOCATION: {job.get('location', 'N/A')}\n\n"
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
+
+    # Country pre-check: skip the API call if the job is clearly outside home countries.
+    # Unknown/ambiguous location is treated as home country (assumed US).
+    detected_country = _detect_job_country(job.get("location"))
+    if detected_country is not None and detected_country not in home_country_codes:
+        log.info(
+            "Country filter: skipping AI for '%s' (location=%s, country=%s)",
+            job.get("title", "?")[:50], job.get("location"), detected_country,
+        )
+        return {"score": 0, "company": None, "salary": None, "keywords": "",
+                "reasoning": f"Outside home countries ({detected_country})"}
 
     # Salary floor pre-check: skip the API call if we can already determine
     # the salary is below the floor — from the DB field or the description text.
@@ -216,7 +313,8 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
     resume_text = RESUME_PATH.read_text(encoding="utf-8")
     profile = _load_profile()
     salary_floor = int(profile.get("compensation", {}).get("salary_floor", _DEFAULT_SALARY_FLOOR))
-    log.info("Salary floor: $%d/year (from profile)", salary_floor)
+    home_country_codes = _normalize_home_countries(profile.get("home_countries", ["US", "USA"]))
+    log.info("Salary floor: $%d/year | Home countries: %s", salary_floor, sorted(home_country_codes))
     conn = get_connection()
 
     if rescore:
@@ -244,7 +342,8 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
 
     now = datetime.now(timezone.utc).isoformat()
     for job in jobs:
-        result = score_job(resume_text, job, salary_floor=salary_floor)
+        result = score_job(resume_text, job, salary_floor=salary_floor,
+                           home_country_codes=home_country_codes)
         result["url"] = job["url"]
         completed += 1
 
