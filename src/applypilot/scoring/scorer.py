@@ -97,10 +97,20 @@ def _find_salary_in_description(text: str) -> str | None:
 # Ordered list of (compiled regex, ISO-3166-1 alpha-2 code).
 # US patterns are first so "US, CA, Remote" is caught before the CA/Canada patterns.
 _COUNTRY_PATTERNS: list[tuple[re.Pattern, str]] = [(re.compile(p, re.I), c) for p, c in [
-    # United States — explicit markers
+    # United States — explicit markers and all 50 states + DC
     (r'\b(united\s+states|u\.s\.a\.?)\b',                  "US"),
     (r'\busa\b',                                            "US"),
     (r'(?:^|[\s,\-–/])(us)(?:[\s,\-–/]|$)',               "US"),  # bare "US" as a token
+    (r'\b(alabama|alaska|arizona|arkansas|colorado|connecticut'
+     r'|delaware|florida|georgia|hawaii|idaho|illinois|indiana'
+     r'|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts'
+     r'|michigan|minnesota|mississippi|missouri|montana|nebraska'
+     r'|nevada|new\s+hampshire|new\s+jersey|new\s+mexico|new\s+york'
+     r'|north\s+carolina|north\s+dakota|ohio|oklahoma|oregon'
+     r'|pennsylvania|rhode\s+island|south\s+carolina|south\s+dakota'
+     r'|tennessee|texas|utah|vermont|virginia|washington'
+     r'|west\s+virginia|wisconsin|wyoming'
+     r'|district\s+of\s+columbia|washington\s+d\.?c\.?)\b',  "US"),
     # Canada — full name, CAN prefix, provinces
     (r'\b(canada|canadian)\b',                              "CA"),
     (r'\bcan\b',                                            "CA"),  # "CAN, Ontario"
