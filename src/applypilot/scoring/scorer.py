@@ -157,6 +157,18 @@ def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_F
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
 
+    # Salary floor pre-check: skip the API call entirely if discovery already
+    # populated a salary we can parse and it's below the floor.
+    if not _is_exempt(job):
+        discovery_salary = job.get("salary")
+        annual = _max_annual_salary(discovery_salary)
+        if annual is not None and annual < salary_floor:
+            log.info(
+                "Salary floor (pre-check): skipping AI for '%s' (salary=%s, annual≈$%d)",
+                job.get("title", "?")[:50], discovery_salary, annual,
+            )
+            return {"score": 0, "company": None, "salary": _normalize_salary(discovery_salary), "keywords": "", "reasoning": "Below salary floor"}
+
     messages = [
         {"role": "system", "content": SCORE_PROMPT},
         {"role": "user", "content": f"RESUME:\n{resume_text}\n\n---\n\nJOB POSTING:\n{job_text}"},
@@ -167,14 +179,13 @@ def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_F
         response = client.chat(messages, max_tokens=SCORE_MAX_TOKENS, temperature=0.2)
         result = _parse_score_response(response)
 
-        # Salary floor: override score to 0 for sub-$160k roles (exempt gig platforms)
+        # Post-check: apply floor to salary extracted from full description
         if not _is_exempt(job):
-            effective_salary = result["salary"] or job.get("salary")
-            annual = _max_annual_salary(effective_salary)
+            annual = _max_annual_salary(result["salary"])
             if annual is not None and annual < salary_floor:
                 log.info(
-                    "Salary floor: zeroing '%s' (salary=%s, annual≈$%d)",
-                    job.get("title", "?")[:50], effective_salary, annual,
+                    "Salary floor (post-check): zeroing '%s' (salary=%s, annual≈$%d)",
+                    job.get("title", "?")[:50], result["salary"], annual,
                 )
                 result["score"] = 0
 
