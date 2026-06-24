@@ -66,9 +66,9 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     so it won't destroy existing data.
 
     Schema columns by stage:
-      - Discovery:  url, title, salary, description, location, site, strategy, discovered_at
+      - Discovery:  url, title, salary, company, description, location, site, strategy, discovered_at
       - Enrichment: full_description, application_url, detail_scraped_at, detail_error
-      - Scoring:    fit_score, score_reasoning, scored_at
+      - Scoring:    fit_score, score_reasoning, scored_at, company (if extractable), salary (if missing)
       - Tailoring:  tailored_resume_path, tailored_at, tailor_attempts
       - Cover:      cover_letter_path, cover_letter_at, cover_attempts
       - Apply:      applied_at, apply_status, apply_error, apply_attempts,
@@ -93,6 +93,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             url                   TEXT PRIMARY KEY,
             title                 TEXT,
             salary                TEXT,
+            company               TEXT,
             description           TEXT,
             location              TEXT,
             site                  TEXT,
@@ -148,6 +149,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "url": "TEXT PRIMARY KEY",
     "title": "TEXT",
     "salary": "TEXT",
+    "company": "TEXT",
     "description": "TEXT",
     "location": "TEXT",
     "site": "TEXT",

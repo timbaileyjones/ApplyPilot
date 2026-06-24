@@ -40,6 +40,8 @@ IMPORTANT FACTORS:
 
 RESPOND IN EXACTLY THIS FORMAT (no other text):
 SCORE: [1-10]
+COMPANY: [company name extracted from the job description, or "Unknown" if not mentioned]
+SALARY: [pay range extracted from the job description, e.g. "$120k-$150k/year" or "$75/hr" or "Not specified"]
 KEYWORDS: [comma-separated ATS keywords from the job description that match or could match the candidate]
 REASONING: [2-3 sentences explaining the score]"""
 
@@ -51,9 +53,11 @@ def _parse_score_response(response: str) -> dict:
         response: Raw LLM response text.
 
     Returns:
-        {"score": int, "keywords": str, "reasoning": str}
+        {"score": int, "company": str|None, "salary": str|None, "keywords": str, "reasoning": str}
     """
     score = 0
+    company = None
+    salary = None
     keywords = ""
     reasoning = response
 
@@ -65,12 +69,19 @@ def _parse_score_response(response: str) -> dict:
                 score = max(1, min(10, score))
             except (AttributeError, ValueError):
                 score = 0
+        elif line.startswith("COMPANY:"):
+            val = line.replace("COMPANY:", "").strip()
+            company = val if val and val.lower() != "unknown" else None
+        elif line.startswith("SALARY:"):
+            val = line.replace("SALARY:", "").strip()
+            salary = val if val and val.lower() != "not specified" else None
         elif line.startswith("KEYWORDS:"):
             keywords = line.replace("KEYWORDS:", "").strip()
         elif line.startswith("REASONING:"):
             reasoning = line.replace("REASONING:", "").strip()
 
-    return {"score": score, "keywords": keywords, "reasoning": reasoning}
+    return {"score": score, "company": company, "salary": salary,
+            "keywords": keywords, "reasoning": reasoning}
 
 
 def score_job(resume_text: str, job: dict) -> dict:
@@ -155,12 +166,14 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
             completed, len(jobs), result["score"], job.get("title", "?")[:60],
         )
 
-    # Write scores to DB
+    # Write scores to DB; COALESCE preserves existing salary from discovery if LLM finds nothing
     now = datetime.now(timezone.utc).isoformat()
     for r in results:
         conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
+            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ?, "
+            "company = COALESCE(?, company), salary = COALESCE(?, salary) WHERE url = ?",
+            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now,
+             r["company"], r["salary"], r["url"]),
         )
     conn.commit()
 
