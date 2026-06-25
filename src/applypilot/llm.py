@@ -12,6 +12,8 @@ LLM_MODEL env var overrides the model name for any provider.
 import json
 import logging
 import os
+import queue
+import threading
 import time
 from datetime import datetime
 from typing import IO
@@ -118,7 +120,8 @@ def _detect_provider() -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 _MAX_RETRIES = 5
-_TIMEOUT = 120  # seconds
+_TIMEOUT = 60        # per-chunk httpx read/connect timeout (seconds)
+_TOTAL_TIMEOUT = 300  # wall-clock cap per attempt (seconds); catches keepalive stalls
 
 # Base wait on first 429/503 (doubles each retry, caps at 60s).
 # Gemini free tier is 15 RPM = 4s minimum between requests; 10s gives headroom.
@@ -237,6 +240,35 @@ class LLMClient:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
+    # -- timeout helper -----------------------------------------------------
+
+    @staticmethod
+    def _run_with_timeout(fn, timeout: float):
+        """Run fn() in a daemon thread; raise TimeoutException if it takes too long.
+
+        Uses a thread+queue instead of ThreadPoolExecutor so there's no
+        persistent thread pool to leak when many workers call this concurrently.
+        """
+        result_q: queue.Queue = queue.Queue()
+
+        def _target():
+            try:
+                result_q.put((True, fn()))
+            except Exception as exc:
+                result_q.put((False, exc))
+
+        t = threading.Thread(target=_target, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            raise httpx.TimeoutException(
+                f"LLM request exceeded {timeout}s wall-clock limit"
+            )
+        ok, value = result_q.get_nowait()
+        if ok:
+            return value
+        raise value
+
     # -- public API ---------------------------------------------------------
 
     def chat(
@@ -256,11 +288,14 @@ class LLMClient:
         _log_request(messages)
         for attempt in range(_MAX_RETRIES):
             try:
-                # Route to native Gemini if we've already confirmed it's needed
+                # Wrap each attempt in a wall-clock timeout so that Gemini
+                # keepalive chunks (which reset the per-chunk httpx read timer)
+                # cannot cause an attempt to run for 10+ minutes.
                 if self._use_native_gemini:
-                    result = self._chat_native_gemini(messages, temperature, max_tokens)
+                    fn = lambda: self._chat_native_gemini(messages, temperature, max_tokens)  # noqa: E731
                 else:
-                    result = self._chat_compat(messages, temperature, max_tokens)
+                    fn = lambda: self._chat_compat(messages, temperature, max_tokens)  # noqa: E731
+                result = self._run_with_timeout(fn, _TOTAL_TIMEOUT)
                 _log_response(result)
                 return result
 
@@ -275,7 +310,10 @@ class LLMClient:
                 self._use_native_gemini = True
                 # Retry immediately with native — don't count as a rate-limit wait
                 try:
-                    result = self._chat_native_gemini(messages, temperature, max_tokens)
+                    result = self._run_with_timeout(
+                        lambda: self._chat_native_gemini(messages, temperature, max_tokens),
+                        _TOTAL_TIMEOUT,
+                    )
                     _log_response(result)
                     return result
                 except httpx.HTTPStatusError as native_exc:
