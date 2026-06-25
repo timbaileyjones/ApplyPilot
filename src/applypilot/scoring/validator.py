@@ -35,6 +35,7 @@ BANNED_WORDS: list[str] = [
     "i am confident", "i believe", "i am excited",
     "plays a critical role", "instrumental in", "integral part of",
     "strong track record", "eager to", "eager",
+    "involved in", "was involved", "involved with",
     # Cover-letter-specific additions
     "this demonstrates", "this reflects", "i have experience with",
     "furthermore", "additionally", "moreover",
@@ -174,15 +175,11 @@ def validate_json_fields(data: dict, profile: dict, mode: str = "normal") -> dic
     if found_leaks:
         errors.append(f"LLM self-talk: '{found_leaks[0]}'")
 
-    # Banned filler words — severity depends on mode
+    # Banned filler words — errors in strict and normal; ignored in lenient
     if mode != "lenient":
         found_banned = [w for w in BANNED_WORDS if re.search(r"\b" + re.escape(w) + r"\b", all_text)]
         if found_banned:
-            msg = f"Banned words: {', '.join(found_banned[:5])}"
-            if mode == "strict":
-                errors.append(msg)
-            else:  # normal
-                warnings.append(msg)
+            errors.append(f"Banned words: {', '.join(found_banned[:5])}")
 
     return {"passed": len(errors) == 0, "errors": errors, "warnings": warnings}
 
@@ -321,15 +318,11 @@ def validate_cover_letter(text: str, mode: str = "normal") -> dict:
     if "\u2014" in text or "\u2013" in text:
         errors.append("Contains em dash or en dash.")
 
-    # 2. Banned words — severity depends on mode
+    # 2. Banned words — errors in strict and normal; ignored in lenient
     if mode != "lenient":
         found = [w for w in BANNED_WORDS if re.search(r"\b" + re.escape(w) + r"\b", text_lower)]
         if found:
-            msg = f"Banned words: {', '.join(found[:5])}"
-            if mode == "strict":
-                errors.append(msg)
-            else:  # normal
-                warnings.append(msg)
+            errors.append(f"Banned words: {', '.join(found[:5])}")
 
     # 3. Word count
     words = len(text.split())
