@@ -5,6 +5,7 @@ postings. All personal data (name, skills, achievements) comes from the user's
 profile at runtime. No hardcoded personal information.
 """
 
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -188,14 +189,15 @@ def generate_cover_letter(
 
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
-def run_cover_letters(min_score: int = 7, limit: int = 20,
-                      validation_mode: str = "normal") -> dict:
+def run_cover_letters(min_score: int = 7, limit: int = 2000,
+                      validation_mode: str = "normal", workers: int = 1) -> dict:
     """Generate cover letters for high-scoring jobs that have tailored resumes.
 
     Args:
         min_score:       Minimum fit_score threshold.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
+        workers:         Number of parallel threads.
 
     Returns:
         {"generated": int, "errors": int, "elapsed": float}
@@ -211,6 +213,7 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         "AND full_description IS NOT NULL "
         "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
         "AND COALESCE(cover_attempts, 0) < ? "
+        "AND COALESCE(active, 1) = 1 "
         "ORDER BY fit_score DESC LIMIT ?",
         (min_score, MAX_ATTEMPTS, limit),
     ).fetchall()
@@ -225,18 +228,17 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         jobs = [dict(zip(columns, row)) for row in jobs]
 
     COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
-    log.info(
-        "Generating cover letters for %d jobs (score >= %d)...",
-        len(jobs), min_score,
-    )
+    if workers > 1:
+        log.info("Generating cover letters for %d jobs (score >= %d, workers=%d)...",
+                  len(jobs), min_score, workers)
+    else:
+        log.info("Generating cover letters for %d jobs (score >= %d)...", len(jobs), min_score)
     t0 = time.time()
     completed = 0
     error_count = 0
     saved = 0
-    now = datetime.now(timezone.utc).isoformat()
 
-    for job in jobs:
-        completed += 1
+    def _cover_one(job: dict) -> dict:
         try:
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
@@ -251,35 +253,46 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             cl_path.write_text(letter, encoding="utf-8")
 
             # Generate PDF (best-effort)
-            pdf_path = None
             try:
                 from applypilot.scoring.pdf import convert_to_pdf
-                pdf_path = str(convert_to_pdf(cl_path))
+                convert_to_pdf(cl_path)
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 
-            conn.execute(
-                "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
-                "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (str(cl_path), now, job["url"]),
-            )
-            conn.commit()
-            saved += 1
+            return {"url": job["url"], "title": job["title"], "path": str(cl_path), "status": "ok"}
+        except Exception as e:
+            log.error("[ERROR] %s -- %s", job["title"][:40], e)
+            return {"url": job["url"], "title": job["title"], "path": None, "status": "error"}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_cover_one, job): job for job in jobs}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            completed += 1
+            now = datetime.now(timezone.utc).isoformat()
+
+            if result["status"] == "ok":
+                conn.execute(
+                    "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
+                    "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+                    (result["path"], now, result["url"]),
+                )
+                conn.commit()
+                saved += 1
+            else:
+                conn.execute(
+                    "UPDATE jobs SET cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+                    (result["url"],),
+                )
+                conn.commit()
+                error_count += 1
 
             elapsed = time.time() - t0
             rate = completed / elapsed if elapsed > 0 else 0
             log.info(
-                "%d/%d [OK] | %.1f jobs/min | %s",
-                completed, len(jobs), rate * 60, job["title"][:40],
+                "%d/%d [%s] | %.1f jobs/min | %s",
+                completed, len(jobs), result["status"].upper(), rate * 60, result["title"][:40],
             )
-        except Exception as e:
-            conn.execute(
-                "UPDATE jobs SET cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (job["url"],),
-            )
-            conn.commit()
-            error_count += 1
-            log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
 
     elapsed = time.time() - t0
     log.info("Cover letters done in %.1fs: %d generated, %d errors", elapsed, saved, error_count)

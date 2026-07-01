@@ -5,6 +5,7 @@ job description. All personal data is loaded at runtime from the user's
 profile and resume file.
 """
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -189,14 +190,22 @@ def _normalize_home_countries(home_countries: list[str]) -> frozenset[str]:
 
 # ── Scoring Prompt ────────────────────────────────────────────────────────
 
-SCORE_PROMPT = """You are a job fit evaluator. Given a candidate's resume and a job description, score how well the candidate fits the role.
+def _build_score_prompt(home_country_codes: frozenset[str]) -> str:
+    home_str = ", ".join(sorted(home_country_codes))
+    return f"""You are a job fit evaluator. Given a candidate's resume and a job description, score how well the candidate fits the role.
+
+GEOGRAPHIC / WORK-AUTHORIZATION ELIGIBILITY (check this first, even if skills match well):
+- The candidate can only work from: {home_str}.
+- The LOCATION field is often generic or unreliable (e.g. "Remote" with no country) -- read the full DESCRIPTION text for any region, country, or work-authorization restriction: mentions of specific regions/countries other than the candidate's home countries (APAC, EMEA, LATAM, "based in India", "must reside in the UK", "authorized to work in Canada", visa/sponsorship limited to one country, etc.).
+- Do not assume "Remote" means globally open -- many "Remote" listings are region-restricted (e.g. "Remote (APAC only)").
+- If the posting restricts eligibility to a region/country that does not include the candidate's home countries, this is a hard disqualifier: score 1-2 regardless of skill match, and state the restriction explicitly in REASONING (e.g. "Restricted to APAC/Malaysia-based candidates; not eligible from the US").
 
 SCORING CRITERIA:
 - 9-10: Perfect match. Candidate has direct experience in nearly all required skills and qualifications.
 - 7-8: Strong match. Candidate has most required skills, minor gaps easily bridged.
 - 5-6: Moderate match. Candidate has some relevant skills but missing key requirements.
 - 3-4: Weak match. Significant skill gaps, would need substantial ramp-up.
-- 1-2: Poor match. Completely different field or experience level.
+- 1-2: Poor match. Completely different field or experience level, or fails the geographic/work-authorization eligibility check above.
 
 IMPORTANT FACTORS:
 - Weight technical skills heavily (programming languages, frameworks, tools)
@@ -297,7 +306,7 @@ def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_F
                     "reasoning": "Below salary floor"}
 
     messages = [
-        {"role": "system", "content": SCORE_PROMPT},
+        {"role": "system", "content": _build_score_prompt(home_country_codes)},
         {"role": "user", "content": f"RESUME:\n{resume_text}\n\n---\n\nJOB POSTING:\n{job_text}"},
     ]
 
@@ -310,7 +319,7 @@ def score_job(resume_text: str, job: dict, salary_floor: int = _DEFAULT_SALARY_F
         return {"score": 0, "company": None, "salary": None, "keywords": "", "reasoning": f"LLM error: {e}"}
 
 
-def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
+def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1) -> dict:
     """Score unscored jobs that have full descriptions.
 
     Args:
@@ -344,37 +353,47 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
 
-    log.info("Scoring %d jobs sequentially...", len(jobs))
+    if workers > 1:
+        log.info("Scoring %d jobs with %d workers...", len(jobs), workers)
+    else:
+        log.info("Scoring %d jobs...", len(jobs))
     t0 = time.time()
     completed = 0
     errors = 0
     results: list[dict] = []
 
     now = datetime.now(timezone.utc).isoformat()
-    for job in jobs:
+
+    def _score(job):
         result = score_job(resume_text, job, salary_floor=salary_floor,
                            home_country_codes=home_country_codes)
-        result["url"] = job["url"]
-        completed += 1
+        return job, result
 
-        if result["score"] == 0:
-            errors += 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_score, job): job for job in jobs}
+        for future in concurrent.futures.as_completed(futures):
+            job, result = future.result()
+            result["url"] = job["url"]
+            completed += 1
 
-        results.append(result)
+            if result["score"] == 0:
+                errors += 1
 
-        log.info(
-            "[%d/%d] score=%d  %s",
-            completed, len(jobs), result["score"], job.get("title", "?")[:60],
-        )
+            results.append(result)
 
-        # Commit immediately so aborts don't lose progress
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ?, "
-            "company = COALESCE(?, company), salary = COALESCE(?, salary) WHERE url = ?",
-            (result["score"], f"{result['keywords']}\n{result['reasoning']}", now,
-             result["company"], result["salary"], result["url"]),
-        )
-        conn.commit()
+            log.info(
+                "[%d/%d] score=%d  %s",
+                completed, len(jobs), result["score"], job.get("title", "?")[:60],
+            )
+
+            # Commit immediately so aborts don't lose progress (main-thread DB access)
+            conn.execute(
+                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ?, "
+                "company = COALESCE(?, company), salary = COALESCE(?, salary) WHERE url = ?",
+                (result["score"], f"{result['keywords']}\n{result['reasoning']}", now,
+                 result["company"], result["salary"], result["url"]),
+            )
+            conn.commit()
 
     elapsed = time.time() - t0
     log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
