@@ -145,6 +145,16 @@ def run(
 
 
 @app.command()
+def serve(
+    port: int = typer.Option(4000, "--port", "-p", help="Port to listen on."),
+) -> None:
+    """Start a local web UI for browsing tailored resumes and cover letters."""
+    from applypilot.webui import run_server
+
+    run_server(port=port)
+
+
+@app.command()
 def apply(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max applications to submit."),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of parallel browser workers."),
