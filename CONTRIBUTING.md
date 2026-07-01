@@ -12,7 +12,7 @@ Thank you for your interest in contributing to ApplyPilot. This guide covers eve
 ### Clone and Install
 
 ```bash
-git clone https://github.com/Pickle-Pixel/ApplyPilot.git
+git clone https://github.com/timbaileyjones/ApplyPilot.git
 cd ApplyPilot
 pip install -e ".[dev]"
 playwright install chromium
@@ -71,7 +71,7 @@ Direct career site scrapers are configured in `config/sites.yaml`. To add a new 
 
 ### Bug Fixes and Features
 
-1. Check existing [issues](https://github.com/Pickle-Pixel/ApplyPilot/issues) to avoid duplicating work
+1. Check existing [issues](https://github.com/timbaileyjones/ApplyPilot/issues) to avoid duplicating work
 2. For new features, open an issue first to discuss the approach
 3. Fork the repo and create a feature branch from `main`
 4. Write your code with type hints and docstrings
