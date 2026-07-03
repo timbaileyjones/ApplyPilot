@@ -320,11 +320,14 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
         "SELECT COUNT(*) FROM jobs WHERE apply_error IS NOT NULL"
     ).fetchone()[0]
 
+    # No `application_url IS NOT NULL` filter here -- the apply queue (see
+    # apply/launcher.py) falls back to the job's plain `url` when
+    # application_url wasn't scraped (common for LinkedIn), so requiring it
+    # here undercounted jobs that are actually claimable.
     stats["ready_to_apply"] = conn.execute(
         "SELECT COUNT(*) FROM jobs "
         "WHERE tailored_resume_path IS NOT NULL "
-        "AND applied_at IS NULL "
-        "AND application_url IS NOT NULL"
+        "AND applied_at IS NULL"
     ).fetchone()[0]
 
     return stats
