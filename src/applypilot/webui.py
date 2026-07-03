@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import platform
+import re
 import shlex
 import subprocess
 import time
@@ -27,6 +28,7 @@ from applypilot.config import (
     RESUME_PATH,
     ensure_dirs,
     load_env,
+    resolve_company_name,
 )
 from applypilot.database import get_connection, init_db
 from applypilot.scoring.pdf import convert_cover_letter_to_pdf, convert_to_pdf
@@ -267,11 +269,19 @@ def _apply_document_override(job_id: int, column: str, new_path) -> dict:
 
 def _apply_generic_cover_letter(job_id: int) -> dict:
     """Render the shared generic cover letter template for this specific job
-    (substituting [Company Name]/[Job Title]) into a per-job file in
-    COVER_LETTER_DIR, then point cover_letter_path at that rendered copy.
+    (substituting [Company Name]/[AT_COMPANY]/[Job Title]) into a per-job file
+    in COVER_LETTER_DIR, then point cover_letter_path at that rendered copy.
 
     The shared template can live anywhere (e.g. a symlink into another repo);
     the rendered per-job .txt/.pdf always land in this repo's cover_letters dir.
+
+    `[AT_COMPANY]` covers the " at {company}" clause and `[Company Name]`
+    covers bare-noun uses (e.g. "help {company} achieve..."). When the DB's
+    `company` value is missing or turns out to be a job board name leaked in
+    from a thin listing (see resolve_company_name), the " at ..." clause is
+    dropped entirely instead of rendering "at linkedin" / "at None", the
+    standalone company line in the header is removed, and bare-noun uses fall
+    back to "your team".
     """
     conn = get_connection()
     row = conn.execute(
@@ -284,11 +294,15 @@ def _apply_generic_cover_letter(job_id: int) -> dict:
         return {"id": job_id, "error": f"Generic cover letter not found at {GENERIC_COVER_LETTER_PATH}"}
 
     template = GENERIC_COVER_LETTER_PATH.read_text(encoding="utf-8")
-    rendered = (
-        template
-        .replace("[Company Name]", row["company"] or "your company")
-        .replace("[Job Title]", row["title"] or "this role")
-    )
+    company = resolve_company_name(row["company"])
+
+    if company:
+        rendered = template.replace("[AT_COMPANY]", f" at {company}").replace("[Company Name]", company)
+    else:
+        rendered = re.sub(r"\n\[Company Name\]\n", "\n", template)
+        rendered = rendered.replace("[AT_COMPANY]", "").replace("[Company Name]", "your team")
+
+    rendered = rendered.replace("[Job Title]", row["title"] or "this role")
 
     url_hash = hashlib.md5(row["url"].encode()).hexdigest()[:8]
     out_path = COVER_LETTER_DIR / f"generic_{url_hash}_CL.txt"

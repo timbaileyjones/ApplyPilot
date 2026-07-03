@@ -159,6 +159,30 @@ def load_base_urls() -> dict[str, str | None]:
 
 
 # ---------------------------------------------------------------------------
+# Company name resolution — the `company` column is LLM-extracted from the
+# job description and for thin/aggregator listings sometimes ends up being
+# the job board's own name (e.g. "linkedin") rather than the employer.
+# Callers building "at {company}" phrasing need to tell those apart from a
+# real employer name.
+# ---------------------------------------------------------------------------
+
+JOB_BOARD_NAMES = {
+    "linkedin", "indeed", "ziprecruiter", "glassdoor", "dice",
+    "monster", "simplyhired", "careerbuilder", "google", "getwork",
+}
+
+
+def resolve_company_name(raw: str | None) -> str | None:
+    """Return a usable employer name, or None if it's missing/a job board/"unknown"."""
+    if not raw:
+        return None
+    name = raw.strip()
+    if not name or name.lower() in JOB_BOARD_NAMES or name.lower() == "unknown":
+        return None
+    return name
+
+
+# ---------------------------------------------------------------------------
 # Default values — referenced across modules instead of magic numbers
 # ---------------------------------------------------------------------------
 

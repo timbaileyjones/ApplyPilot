@@ -14,7 +14,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
+from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile, resolve_company_name
 from applypilot.database import get_connection, get_jobs_by_stage
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
@@ -140,9 +140,20 @@ def generate_cover_letter(
     Returns:
         The cover letter text (best attempt even if validation failed).
     """
+    # `job['site']` is the job board (e.g. "linkedin"), not the employer --
+    # prefer the extracted `company` and fall back to `site` only if it
+    # resolves to a real employer name (see resolve_company_name). If neither
+    # is usable, tell the model explicitly rather than letting it write
+    # "at LinkedIn" / "at Indeed" into the letter.
+    company = resolve_company_name(job.get("company")) or resolve_company_name(job.get("site"))
+    company_line = (
+        f"COMPANY: {company}\n" if company
+        else "COMPANY: unknown -- do not name a specific company or job board; "
+             'refer to "your team"/"the team" generically\n'
+    )
     job_text = (
         f"TITLE: {job['title']}\n"
-        f"COMPANY: {job['site']}\n"
+        f"{company_line}"
         f"LOCATION: {job.get('location', 'N/A')}\n\n"
         f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
     )
