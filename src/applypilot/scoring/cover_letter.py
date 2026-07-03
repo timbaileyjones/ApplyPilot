@@ -254,8 +254,8 @@ def run_cover_letters(min_score: int = 7, limit: int = 2000,
 
             # Generate PDF (best-effort)
             try:
-                from applypilot.scoring.pdf import convert_to_pdf
-                convert_to_pdf(cl_path)
+                from applypilot.scoring.pdf import convert_cover_letter_to_pdf
+                convert_cover_letter_to_pdf(cl_path)
             except Exception:
                 log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 

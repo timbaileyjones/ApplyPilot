@@ -29,7 +29,7 @@ from applypilot.config import (
     load_env,
 )
 from applypilot.database import get_connection, init_db
-from applypilot.scoring.pdf import convert_to_pdf
+from applypilot.scoring.pdf import convert_cover_letter_to_pdf, convert_to_pdf
 
 log = logging.getLogger(__name__)
 
@@ -188,8 +188,9 @@ def create_app() -> Flask:
         if not pdf_path.exists() or stale:
             if not txt_path.exists():
                 return Response("Source file missing.", mimetype="text/plain", status=404)
+            convert = convert_cover_letter_to_pdf if column == "cover_letter_path" else convert_to_pdf
             try:
-                convert_to_pdf(txt_path)
+                convert(txt_path)
             except Exception as e:
                 log.error("On-demand PDF conversion failed for %s: %s", txt_path, e)
                 return Response(f"PDF conversion failed: {e}", mimetype="text/plain", status=500)
@@ -297,7 +298,7 @@ def _apply_generic_cover_letter(job_id: int) -> dict:
     # Generate the PDF eagerly (not lazily on first view) so a Trello attachment
     # swap right after this attaches a real PDF instead of falling back to the .txt.
     try:
-        convert_to_pdf(out_path)
+        convert_cover_letter_to_pdf(out_path)
     except Exception as e:
         log.error("PDF conversion failed for generic cover letter (job %d): %s", job_id, e)
 

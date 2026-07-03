@@ -331,6 +331,67 @@ li {{
 </html>"""
 
 
+# ── Cover Letter Template ────────────────────────────────────────────────
+
+LETTER_MARGIN_TOP_IN = 0.75
+LETTER_MARGIN_SIDE_IN = 0.9
+LETTER_MAX_FONT_PT = 11.0
+LETTER_MIN_FONT_PT = 8.0
+
+
+def build_letter_html(text: str, font_size_pt: float = LETTER_MAX_FONT_PT) -> str:
+    """Build simple prose-letter HTML from raw cover letter text.
+
+    Unlike build_html(), this does not assume a resume's ALL-CAPS section
+    structure -- it just splits on blank lines and renders each block as a
+    paragraph. Using the resume parser on cover-letter prose silently drops
+    everything past the first few lines (they get eaten as name/title/
+    location/contact), so cover letters need their own renderer.
+
+    line-height and paragraph spacing scale down with font_size_pt so a
+    smaller font also buys back the vertical space it needs to fit one page.
+    """
+    import html as _html
+
+    blocks = [b.strip() for b in text.strip().split("\n\n") if b.strip()]
+    paragraphs_html = "".join(
+        f'<p>{_html.escape(block).replace(chr(10), "<br>")}</p>\n' for block in blocks
+    )
+
+    line_height = 1.5 - 0.15 * (LETTER_MAX_FONT_PT - font_size_pt)
+    para_gap = 10 - 0.6 * (LETTER_MAX_FONT_PT - font_size_pt)
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+@page {{
+    size: letter;
+    margin: {LETTER_MARGIN_TOP_IN}in {LETTER_MARGIN_SIDE_IN}in;
+}}
+* {{
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}}
+body {{
+    font-family: 'Calibri', 'Segoe UI', Arial, sans-serif;
+    font-size: {font_size_pt}pt;
+    line-height: {line_height};
+    color: #1a1a1a;
+}}
+p {{
+    margin-bottom: {para_gap}pt;
+}}
+</style>
+</head>
+<body>
+{paragraphs_html}
+</body>
+</html>"""
+
+
 # ── PDF Renderer ─────────────────────────────────────────────────────────
 
 def render_pdf(html: str, output_path: str) -> None:
@@ -355,12 +416,48 @@ def render_pdf(html: str, output_path: str) -> None:
         browser.close()
 
 
+def render_letter_pdf(text: str, output_path: str) -> None:
+    """Render cover letter text to PDF, shrinking the font to fit one page.
+
+    Never drops content -- if it still doesn't fit at LETTER_MIN_FONT_PT,
+    renders at that floor size and lets it spill onto a second page rather
+    than truncating.
+    """
+    from playwright.sync_api import sync_playwright
+
+    printable_width_px = round((8.5 - 2 * LETTER_MARGIN_SIDE_IN) * 96)
+    printable_height_px = round((11 - 2 * LETTER_MARGIN_TOP_IN) * 96)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": printable_width_px, "height": printable_height_px})
+
+        font_size = LETTER_MAX_FONT_PT
+        while True:
+            page.set_content(build_letter_html(text, font_size_pt=font_size), wait_until="networkidle")
+            content_height = page.evaluate("document.body.scrollHeight")
+            if content_height <= printable_height_px or font_size <= LETTER_MIN_FONT_PT:
+                break
+            font_size = max(font_size - 0.5, LETTER_MIN_FONT_PT)
+
+        page.pdf(
+            path=output_path,
+            format="Letter",
+            margin={
+                "top": f"{LETTER_MARGIN_TOP_IN}in", "bottom": f"{LETTER_MARGIN_TOP_IN}in",
+                "left": f"{LETTER_MARGIN_SIDE_IN}in", "right": f"{LETTER_MARGIN_SIDE_IN}in",
+            },
+            print_background=True,
+        )
+        browser.close()
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 def convert_to_pdf(
     text_path: Path, output_path: Path | None = None, html_only: bool = False
 ) -> Path:
-    """Convert a text resume/cover letter to PDF.
+    """Convert a structured text resume (ALL-CAPS section headers) to PDF.
 
     Args:
         text_path: Path to the .txt file to convert.
@@ -386,6 +483,41 @@ def convert_to_pdf(
     out = output_path or text_path.with_suffix(".pdf")
     out = Path(out)
     render_pdf(html, str(out))
+    log.info("PDF generated: %s", out)
+    return out
+
+
+def convert_cover_letter_to_pdf(
+    text_path: Path, output_path: Path | None = None, html_only: bool = False
+) -> Path:
+    """Convert a plain-prose cover letter to PDF.
+
+    Cover letters don't have the resume's ALL-CAPS section structure, so
+    convert_to_pdf()'s parser silently drops everything past the first few
+    lines. This renders the text as simple paragraphs instead.
+
+    Args:
+        text_path: Path to the .txt file to convert.
+        output_path: Optional override for the output path. Defaults to same
+            name with .pdf extension.
+        html_only: If True, output HTML instead of PDF.
+
+    Returns:
+        Path to the generated PDF (or HTML) file.
+    """
+    text_path = Path(text_path)
+    text = text_path.read_text(encoding="utf-8")
+
+    if html_only:
+        out = output_path or text_path.with_suffix(".html")
+        out = Path(out)
+        out.write_text(build_letter_html(text), encoding="utf-8")
+        log.info("HTML generated: %s", out)
+        return out
+
+    out = output_path or text_path.with_suffix(".pdf")
+    out = Path(out)
+    render_letter_pdf(text, str(out))
     log.info("PDF generated: %s", out)
     return out
 
