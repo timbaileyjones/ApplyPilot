@@ -604,6 +604,7 @@ RESULT:FAILED:reason -- any other failure (brief reason)
 == FORM TRICKS ==
 - Popup/new window opened? browser_tabs action "list" to see all tabs. browser_tabs action "select" with the tab index to switch. ALWAYS check for new tabs after clicking login/apply/sign-in buttons.
 - "Upload your resume" pre-fill page (Workday, Lever, etc.): This is NOT the application form yet. Click "Select file" or the upload area, then browser_file_upload with the resume PDF path. Wait for parsing to finish. Then click Next/Continue to reach the actual form.
+- LinkedIn Easy Apply resume picker (a row/list of previously-uploaded resume cards instead of a plain file input): Do NOT pick one of the old resumes. Click the "..."/kebab menu on EVERY existing card and remove it, one at a time (re-snapshot after each removal since refs change), until none remain. Then use the "Upload resume" button/area with browser_file_upload and the PDF path above. Confirm the new one is now the only/selected resume before continuing.
 - File upload not working? Try: (1) browser_click the upload button/area, (2) browser_file_upload with the path. If still failing, look for a hidden file input or a "Select file" link and click that first.
 - Dropdown won't fill? browser_click to open it, then browser_click the option.
 - Checkbox won't check via fill_form? Use browser_click on it instead. Snapshot to verify.

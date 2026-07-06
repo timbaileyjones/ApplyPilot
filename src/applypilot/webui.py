@@ -9,6 +9,7 @@ which also gates the tailor/cover/apply pipeline queries.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import platform
 import re
@@ -157,16 +158,54 @@ def create_app() -> Flask:
 
     @app.post("/api/jobs/<int:job_id>/apply")
     def launch_apply(job_id: int):
+        payload = request.get_json(silent=True) or {}
+        dry_run = bool(payload.get("dry_run", True))
         conn = get_connection()
         row = conn.execute("SELECT url FROM jobs WHERE rowid = ?", (job_id,)).fetchone()
         if row is None or not row["url"]:
             return jsonify({"launched": False, "error": "Job not found"}), 404
         try:
-            _launch_apply_in_terminal(job_id, row["url"])
-            return jsonify({"launched": True})
+            _launch_apply_in_terminal(job_id, row["url"], dry_run=dry_run)
+            return jsonify({"launched": True, "dry_run": dry_run})
         except Exception as e:
             log.error("Failed to launch apply for job %d: %s", job_id, e)
             return jsonify({"launched": False, "error": str(e)}), 500
+
+    @app.post("/api/jobs/<int:job_id>/apply-done")
+    def apply_done(job_id: int):
+        """Callback hit by the spawned Terminal script once `./ap apply` exits.
+
+        Fires regardless of whether the browser tab that launched it is still
+        open. Only syncs Trello for real (non-dry-run) applies that actually
+        succeeded -- a dry run's RESULT:APPLIED doesn't mean anything was
+        submitted.
+        """
+        payload = request.get_json(silent=True) or {}
+        dry_run = bool(payload.get("dry_run", True))
+        conn = get_connection()
+        row = conn.execute(
+            f"SELECT {', '.join(_CARD_FIELDS)} FROM jobs WHERE rowid = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"ok": False, "error": "Job not found"}), 404
+        job = dict(row)
+
+        result = {"ok": True}
+        if not dry_run and job.get("apply_status") == "applied":
+            trello_error = _sync_trello_card_applied(conn, job_id, job)
+            if trello_error:
+                result["trello_error"] = trello_error
+        return jsonify(result)
+
+    @app.get("/api/jobs/<int:job_id>/status")
+    def job_status(job_id: int):
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT apply_status, applied_at, apply_error FROM jobs WHERE rowid = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "Job not found"}), 404
+        return jsonify(dict(row))
 
     @app.get("/pdf/resume/<int:job_id>")
     def resume_pdf(job_id: int):
@@ -202,12 +241,17 @@ def create_app() -> Flask:
     return app
 
 
-def _launch_apply_in_terminal(job_id: int, job_url: str) -> None:
-    """Open a new macOS Terminal window running `./ap apply --url <job_url> --dry-run`.
+def _launch_apply_in_terminal(job_id: int, job_url: str, dry_run: bool = True) -> None:
+    """Open a new macOS Terminal window running `./ap apply --url <job_url>`.
 
     Writes a small shell script and points Terminal.app at its path (via
     osascript) rather than embedding the URL directly in an AppleScript string,
     to avoid a second layer of shell/AppleScript escaping.
+
+    When `dry_run` is False, the script also calls back to this same server's
+    `/apply-done` endpoint once `./ap apply` exits, so the caller (which may no
+    longer have this request open, e.g. a browser tab) can react to real
+    completions -- syncing Trello, advancing the UI's selection, etc.
     """
     if platform.system() != "Darwin":
         raise RuntimeError("Launching a new Terminal window is only supported on macOS.")
@@ -220,19 +264,29 @@ def _launch_apply_in_terminal(job_id: int, job_url: str) -> None:
     log_dir = APP_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     script_path = log_dir / f"apply_launch_{job_id}_{int(time.time())}.sh"
-    script_path.write_text(
-        "#!/bin/bash\n"
-        f"cd {shlex.quote(str(project_root))}\n"
-        f"./ap apply --url {shlex.quote(job_url)} --dry-run\n"
-        "echo\n"
-        "echo 'Press Enter to close this window...'\n"
-        "read\n"
-    )
+
+    lines = [
+        "#!/bin/bash",
+        f"cd {shlex.quote(str(project_root))}",
+        f"./ap apply --url {shlex.quote(job_url)}" + ("" if not dry_run else " --dry-run"),
+    ]
+    if not dry_run:
+        callback_url = request.host_url.rstrip("/") + f"/api/jobs/{job_id}/apply-done"
+        callback_payload = shlex.quote(json.dumps({"dry_run": False}))
+        lines.append(
+            f"curl -s -X POST {shlex.quote(callback_url)} "
+            f"-H 'Content-Type: application/json' -d {callback_payload} >/dev/null 2>&1"
+        )
+    lines += ["echo", "echo 'Press Enter to close this window...'", "read"]
+    script_path.write_text("\n".join(lines) + "\n")
     script_path.chmod(0o700)
 
+    # Appending "; exit" makes Terminal close the window automatically once
+    # the "Press Enter..." pause is dismissed, instead of dropping back to a
+    # bare shell prompt that needs a manual exit/Ctrl-D.
     osa_script = (
         f'tell application "Terminal"\n'
-        f'  do script "{script_path}"\n'
+        f'  do script "{script_path}; exit"\n'
         f'  activate\n'
         f'end tell'
     )
@@ -427,6 +481,31 @@ def _sync_trello_card(conn, job_id: int, active: bool) -> str | None:
         return str(e)
 
 
+def _sync_trello_card_applied(conn, job_id: int, job: dict) -> str | None:
+    """Comment on the job's Trello card to record a real (non-dry-run) apply.
+
+    Returns an error message on failure, or None on success / when Trello
+    isn't configured.
+    """
+    if not trello.is_configured():
+        return None
+
+    try:
+        card_id = trello.get_or_create_card(job, job_id)
+        if card_id != job.get("trello_card_id"):
+            conn.execute("UPDATE jobs SET trello_card_id = ? WHERE rowid = ?", (card_id, job_id))
+            conn.commit()
+        else:
+            trello.update_card_desc(card_id, job, job_id)
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        trello.add_comment(card_id, f"Applied via ApplyPilot automated apply at {now}.")
+        return None
+    except Exception as e:
+        log.error("Trello apply sync failed for job %d: %s", job_id, e)
+        return str(e)
+
+
 def run_server(port: int = 4000) -> None:
     """Start the review web UI, blocking the current thread until Ctrl+C.
 
@@ -496,11 +575,12 @@ INDEX_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <div id="help">j/k or &uarr;/&darr;: move &nbsp; x: toggle active/inactive &nbsp; a: launch apply (dry-run) &nbsp; Shift+R: use real resume &nbsp; Shift+G: use generic cover letter &nbsp; click row to select &nbsp; click a column header to sort</div>
+  <div id="help">j/k or &uarr;/&darr;: move &nbsp; x: toggle active/inactive &nbsp; a: launch apply (dry-run) &nbsp; Shift+A: launch real apply (no dry-run) &nbsp; Shift+R: use real resume &nbsp; Shift+G: use generic cover letter &nbsp; click row to select &nbsp; click a column header to sort</div>
   <div id="toolbar">
     <div id="scores"></div>
     <input id="search" type="text" placeholder="Search all job fields...">
     <label><input type="checkbox" id="hide-inactive"> Hide inactive</label>
+    <label><input type="checkbox" id="hide-applied"> Hide applied</label>
     <div id="trello-status"></div>
     <div id="count"></div>
   </div>
@@ -555,6 +635,7 @@ let checkedScores = new Set();
 let searchIds = null;  // null = no search active; Set of job ids = server-matched results
 let searchDebounce = null;
 let hideInactive = false;
+let hideApplied = false;
 let sortKey = 'fit_score';
 let sortDir = -1;
 
@@ -701,6 +782,7 @@ function applyFilter() {
   visible = jobs.filter(j => {
     if (!checkedScores.has(j.fit_score)) return false;
     if (hideInactive && !j.active) return false;
+    if (hideApplied && statusOf(j) === 'applied') return false;
     if (searchIds !== null && !searchIds.has(j.id)) return false;
     return true;
   });
@@ -896,6 +978,59 @@ async function launchApply() {
   );
 }
 
+async function launchRealApply() {
+  const j = visible.find(j => j.id === selectedId);
+  if (!j) return;
+  const res = await fetch(`/api/jobs/${j.id}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dry_run: false }),
+  });
+  const data = await res.json();
+  if (!data.launched) {
+    showStatus(`Apply launch failed: ${data.error}`, true);
+    return;
+  }
+  showStatus('Real apply launched in a new Terminal window.', false);
+  pollApplyCompletion(j.id, j.apply_status);
+}
+
+function pollApplyCompletion(jobId, initialStatus) {
+  const maxTicks = 200; // ~10 minutes at 3s intervals
+  let ticks = 0;
+  const interval = setInterval(async () => {
+    ticks++;
+    if (ticks > maxTicks) {
+      clearInterval(interval);
+      showStatus(`Apply for job ${jobId} is still running -- check manually.`, true);
+      return;
+    }
+    let data;
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/status`);
+      if (!res.ok) return;
+      data = await res.json();
+    } catch {
+      return;
+    }
+    if (data.apply_status === initialStatus || data.apply_status === 'in_progress') return;
+
+    clearInterval(interval);
+    const j = jobs.find(x => x.id === jobId);
+    if (j) {
+      j.apply_status = data.apply_status;
+      j.applied_at = data.applied_at;
+      j.apply_error = data.apply_error;
+    }
+    if (selectedId === jobId) {
+      moveSelection(1);
+    } else {
+      render();
+    }
+    showStatus(`Apply finished: ${data.apply_status}`, data.apply_status !== 'applied');
+  }, 3000);
+}
+
 function showStatus(msg, isError = true) {
   const el = document.getElementById('trello-status');
   el.textContent = msg;
@@ -926,12 +1061,18 @@ document.getElementById('hide-inactive').addEventListener('change', (e) => {
   applyFilter();
 });
 
+document.getElementById('hide-applied').addEventListener('change', (e) => {
+  hideApplied = e.target.checked;
+  applyFilter();
+});
+
 document.addEventListener('keydown', (e) => {
   if (document.activeElement && document.activeElement.id === 'search') return;
   if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
   else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1); }
   else if (e.key === 'x') { e.preventDefault(); toggleActive(); }
   else if (e.key === 'a') { e.preventDefault(); launchApply(); }
+  else if (e.key === 'A') { e.preventDefault(); launchRealApply(); }
   else if (e.key === 'R') { e.preventDefault(); useRealResume(); }
   else if (e.key === 'G') { e.preventDefault(); useGenericCoverLetter(); }
 });
