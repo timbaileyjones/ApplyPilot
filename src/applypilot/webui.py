@@ -148,6 +148,21 @@ def create_app() -> Flask:
 
     @app.post("/api/jobs/<int:job_id>/resume/real")
     def use_real_resume(job_id: int):
+        if not RESUME_PATH.exists():
+            return jsonify({"id": job_id, "error": f"Real resume not found at {RESUME_PATH}"}), 404
+
+        # Generate the PDF eagerly (not lazily on first view) so a Trello attachment
+        # swap right after this attaches a real PDF instead of falling back to the .txt
+        # (same hazard _apply_generic_cover_letter already guards against).
+        pdf_path = RESUME_PATH.with_suffix(".pdf")
+        stale = pdf_path.exists() and RESUME_PATH.stat().st_mtime > pdf_path.stat().st_mtime
+        if not pdf_path.exists() or stale:
+            try:
+                convert_to_pdf(RESUME_PATH)
+            except Exception as e:
+                log.error("PDF conversion failed for real resume: %s", e)
+                return jsonify({"id": job_id, "error": f"PDF conversion failed: {e}"}), 500
+
         result = _apply_document_override(job_id, "tailored_resume_path", RESUME_PATH)
         return jsonify(result)
 
@@ -640,6 +655,24 @@ let sortKey = 'fit_score';
 let sortDir = -1;
 
 const SCORES_STORAGE_KEY = 'applypilot_checked_scores';
+const SELECTED_JOB_STORAGE_KEY = 'applypilot_selected_job';
+
+function loadStoredSelectedId() {
+  try {
+    const raw = localStorage.getItem(SELECTED_JOB_STORAGE_KEY);
+    if (raw === null) return null;
+    const id = JSON.parse(raw);
+    return typeof id === 'number' ? id : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveSelectedId(id) {
+  try {
+    localStorage.setItem(SELECTED_JOB_STORAGE_KEY, JSON.stringify(id));
+  } catch (e) {}
+}
 
 function loadStoredScores() {
   try {
@@ -698,7 +731,12 @@ async function load() {
   buildHeader();
   sizeTableToRows();
   applyFilter();
-  if (visible.length > 0) selectRow(visible[0].id);
+  const storedId = loadStoredSelectedId();
+  if (storedId !== null && visible.some(j => j.id === storedId)) {
+    selectRow(storedId);
+  } else if (visible.length > 0) {
+    selectRow(visible[0].id);
+  }
 }
 
 let columnWidths = {};  // column index -> px, captured from the rendered layout on first paint
@@ -831,6 +869,7 @@ function escapeHtml(s) {
 
 function selectRow(id) {
   selectedId = id;
+  saveSelectedId(id);
   render();
   loadPanes();
 }
