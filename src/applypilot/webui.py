@@ -943,7 +943,7 @@ async function toggleActive() {
   });
   const data = await res.json();
   j.active = data.active;
-  render();
+  applyFilter();
   showStatus(data.trello_error ? `Trello sync failed: ${data.trello_error}` : '');
 }
 
@@ -1023,9 +1023,14 @@ function pollApplyCompletion(jobId, initialStatus) {
       j.apply_error = data.apply_error;
     }
     if (selectedId === jobId) {
-      moveSelection(1);
+      // Figure out the neighbor before re-filtering can remove this job
+      // from `visible` (e.g. "Hide applied" is checked).
+      const idx = selectedIndex();
+      const neighborId = (visible[idx + 1] || visible[idx - 1] || {}).id ?? null;
+      applyFilter();
+      if (neighborId !== null && visible.some(v => v.id === neighborId)) selectRow(neighborId);
     } else {
-      render();
+      applyFilter();
     }
     showStatus(`Apply finished: ${data.apply_status}`, data.apply_status !== 'applied');
   }, 3000);
