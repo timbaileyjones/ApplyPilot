@@ -13,6 +13,10 @@ DB_PATH = APP_DIR / "applypilot.db"
 PROFILE_PATH = APP_DIR / "profile.json"
 RESUME_PATH = APP_DIR / "resume.txt"
 RESUME_PDF_PATH = APP_DIR / "resume.pdf"
+# Hosted, hand-maintained PDF used by the web UI's "use real resume" override
+# instead of converting RESUME_PATH's .txt through the AI-tailored-resume PDF
+# renderer (which assumes an AI-tailoring-pipeline text layout).
+REAL_RESUME_PDF_URL = "https://linuxtampa.com/assets/Tim-Bailey-Jones-Resume-ATS-July-2026.pdf"
 GENERIC_COVER_LETTER_PATH = APP_DIR / "generic_cover_letter.txt"
 SEARCH_CONFIG_PATH = APP_DIR / "searches.yaml"
 ENV_PATH = APP_DIR / ".env"

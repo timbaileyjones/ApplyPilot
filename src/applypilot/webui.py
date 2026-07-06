@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
 from flask import Flask, Response, jsonify, request
 
 from applypilot import trello
@@ -26,7 +27,9 @@ from applypilot.config import (
     APP_DIR,
     COVER_LETTER_DIR,
     GENERIC_COVER_LETTER_PATH,
+    REAL_RESUME_PDF_URL,
     RESUME_PATH,
+    RESUME_PDF_PATH,
     ensure_dirs,
     load_env,
     resolve_company_name,
@@ -151,17 +154,19 @@ def create_app() -> Flask:
         if not RESUME_PATH.exists():
             return jsonify({"id": job_id, "error": f"Real resume not found at {RESUME_PATH}"}), 404
 
-        # Generate the PDF eagerly (not lazily on first view) so a Trello attachment
-        # swap right after this attaches a real PDF instead of falling back to the .txt
-        # (same hazard _apply_generic_cover_letter already guards against).
-        pdf_path = RESUME_PATH.with_suffix(".pdf")
-        stale = pdf_path.exists() and RESUME_PATH.stat().st_mtime > pdf_path.stat().st_mtime
-        if not pdf_path.exists() or stale:
-            try:
-                convert_to_pdf(RESUME_PATH)
-            except Exception as e:
-                log.error("PDF conversion failed for real resume: %s", e)
-                return jsonify({"id": job_id, "error": f"PDF conversion failed: {e}"}), 500
+        # Fetch the hand-maintained PDF directly instead of converting
+        # RESUME_PATH's .txt through the AI-tailored-resume parser/renderer --
+        # that pipeline assumes the AI tailoring format and mangles a
+        # differently-structured master resume. tailored_resume_path still
+        # points at the .txt (for its plain-text content used elsewhere), but
+        # its .pdf sibling is now this downloaded file instead of a rendered one.
+        try:
+            resp = requests.get(REAL_RESUME_PDF_URL, timeout=15)
+            resp.raise_for_status()
+            RESUME_PDF_PATH.write_bytes(resp.content)
+        except Exception as e:
+            log.error("Failed to fetch real resume PDF from %s: %s", REAL_RESUME_PDF_URL, e)
+            return jsonify({"id": job_id, "error": f"Failed to fetch real resume PDF: {e}"}), 502
 
         result = _apply_document_override(job_id, "tailored_resume_path", RESUME_PATH)
         return jsonify(result)
@@ -240,6 +245,17 @@ def create_app() -> Flask:
 
         txt_path = Path(row[column])
         pdf_path = txt_path.with_suffix(".pdf")
+
+        # The real resume's PDF comes from REAL_RESUME_PDF_URL (see
+        # use_real_resume), never from parsing RESUME_PATH -- skip the
+        # txt-vs-pdf staleness regeneration, which would otherwise silently
+        # overwrite the downloaded PDF with a broken parser conversion the
+        # next time RESUME_PATH's .txt is edited for any other reason.
+        if column == "tailored_resume_path" and txt_path == RESUME_PATH:
+            if not pdf_path.exists():
+                return Response("Not generated yet -- press Shift+R again.", mimetype="text/plain", status=404)
+            return Response(pdf_path.read_bytes(), mimetype="application/pdf")
+
         stale = pdf_path.exists() and txt_path.exists() and txt_path.stat().st_mtime > pdf_path.stat().st_mtime
         if not pdf_path.exists() or stale:
             if not txt_path.exists():
