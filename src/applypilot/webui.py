@@ -649,8 +649,26 @@ let selectedId = null;
 let checkedScores = new Set();
 let searchIds = null;  // null = no search active; Set of job ids = server-matched results
 let searchDebounce = null;
-let hideInactive = false;
-let hideApplied = false;
+const HIDE_FILTERS_STORAGE_KEY = 'applypilot_hide_filters';
+
+function loadStoredHideFilters() {
+  try {
+    const raw = localStorage.getItem(HIDE_FILTERS_STORAGE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveHideFilters() {
+  localStorage.setItem(HIDE_FILTERS_STORAGE_KEY, JSON.stringify({ hideInactive, hideApplied }));
+}
+
+const storedHideFilters = loadStoredHideFilters();
+let hideInactive = storedHideFilters ? !!storedHideFilters.hideInactive : false;
+let hideApplied = storedHideFilters ? !!storedHideFilters.hideApplied : false;
 let sortKey = 'fit_score';
 let sortDir = -1;
 
@@ -1100,13 +1118,17 @@ async function runSearch(q) {
   applyFilter();
 }
 
+document.getElementById('hide-inactive').checked = hideInactive;
 document.getElementById('hide-inactive').addEventListener('change', (e) => {
   hideInactive = e.target.checked;
+  saveHideFilters();
   applyFilter();
 });
 
+document.getElementById('hide-applied').checked = hideApplied;
 document.getElementById('hide-applied').addEventListener('change', (e) => {
   hideApplied = e.target.checked;
+  saveHideFilters();
   applyFilter();
 });
 
