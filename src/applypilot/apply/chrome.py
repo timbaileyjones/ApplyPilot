@@ -186,6 +186,28 @@ def _suppress_restore_nag(profile_dir: Path) -> None:
 # Chrome launch / kill
 # ---------------------------------------------------------------------------
 
+def _activate_window(pid: int) -> None:
+    """Bring a process's window to the front on macOS (best-effort).
+
+    subprocess.Popen doesn't request window focus, so a freshly launched
+    worker Chrome can end up on-screen (per --window-position) but buried
+    behind whatever's already frontmost -- e.g. the terminal that launched
+    it -- with no visible indication it's running. Requires Accessibility/
+    Automation permission for System Events; silently no-ops without it.
+    """
+    try:
+        subprocess.run(
+            [
+                "osascript", "-e",
+                f'tell application "System Events" to set frontmost of '
+                f'(first process whose unix id is {pid}) to true',
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+    except Exception:
+        logger.debug("Could not activate Chrome window for pid %d", pid, exc_info=True)
+
+
 def launch_chrome(worker_id: int, port: int | None = None,
                   headless: bool = False) -> subprocess.Popen:
     """Launch a Chrome instance with remote debugging for a worker.
@@ -248,6 +270,10 @@ def launch_chrome(worker_id: int, port: int | None = None,
 
     # Give Chrome time to start and open the debug port
     time.sleep(3)
+
+    if not headless and platform.system() == "Darwin":
+        _activate_window(proc.pid)
+
     logger.info("[worker-%d] Chrome started on port %d (pid %d)",
                 worker_id, port, proc.pid)
     return proc
