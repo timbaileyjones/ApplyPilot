@@ -108,6 +108,8 @@ def _build_card_desc(job: dict, job_id: int) -> str:
     fit = f"{job['fit_score']}/10" if job.get("fit_score") is not None else "—"
     site = job.get("site") or "—"
     status = job.get("apply_status") or "not applied"
+    if status == "applied" and job.get("apply_method"):
+        status = f"{status} ({job['apply_method']})"
     discovered = (job.get("discovered_at") or "")[:10]
     url = job.get("url") or ""
     app_url = job.get("application_url") or url

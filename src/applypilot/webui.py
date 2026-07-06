@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 
 _CARD_FIELDS = (
     "company", "title", "location", "salary", "fit_score", "site",
-    "apply_status", "discovered_at", "url", "application_url",
+    "apply_status", "apply_method", "discovered_at", "url", "application_url",
     "score_reasoning", "tailored_resume_path", "cover_letter_path", "trello_card_id",
 )
 
@@ -215,6 +215,36 @@ def create_app() -> Flask:
             trello_error = _sync_trello_card_applied(conn, job_id, job)
             if trello_error:
                 result["trello_error"] = trello_error
+        return jsonify(result)
+
+    @app.post("/api/jobs/<int:job_id>/mark-applied-manually")
+    def mark_applied_manually(job_id: int):
+        """Mark a job applied when it was submitted outside ApplyPilot entirely
+        (e.g. applied directly on the site) -- still records it and syncs Trello,
+        just tagged apply_method='manual' instead of 'automated'.
+        """
+        conn = get_connection()
+        row = conn.execute(
+            f"SELECT {', '.join(_CARD_FIELDS)} FROM jobs WHERE rowid = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"id": job_id, "error": "Job not found"}), 404
+        job = dict(row)
+
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "UPDATE jobs SET apply_status = 'applied', applied_at = ?, "
+            "apply_error = NULL, apply_method = 'manual' WHERE rowid = ?",
+            (now, job_id),
+        )
+        conn.commit()
+
+        job["apply_status"] = "applied"
+        job["apply_method"] = "manual"
+        result = {"id": job_id, "applied_at": now}
+        trello_error = _sync_trello_card_manual_apply(conn, job_id, job)
+        if trello_error:
+            result["trello_error"] = trello_error
         return jsonify(result)
 
     @app.get("/api/jobs/<int:job_id>/status")
@@ -537,6 +567,32 @@ def _sync_trello_card_applied(conn, job_id: int, job: dict) -> str | None:
         return str(e)
 
 
+def _sync_trello_card_manual_apply(conn, job_id: int, job: dict) -> str | None:
+    """Comment on the job's Trello card to record a manually-marked apply
+    (submitted outside ApplyPilot entirely, e.g. directly on the site).
+
+    Returns an error message on failure, or None on success / when Trello
+    isn't configured.
+    """
+    if not trello.is_configured():
+        return None
+
+    try:
+        card_id = trello.get_or_create_card(job, job_id)
+        if card_id != job.get("trello_card_id"):
+            conn.execute("UPDATE jobs SET trello_card_id = ? WHERE rowid = ?", (card_id, job_id))
+            conn.commit()
+        else:
+            trello.update_card_desc(card_id, job, job_id)
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        trello.add_comment(card_id, f"Marked as applied manually (outside ApplyPilot) at {now}.")
+        return None
+    except Exception as e:
+        log.error("Trello manual-apply sync failed for job %d: %s", job_id, e)
+        return str(e)
+
+
 def run_server(port: int = 4000) -> None:
     """Start the review web UI, blocking the current thread until Ctrl+C.
 
@@ -606,7 +662,7 @@ INDEX_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <div id="help">j/k or &uarr;/&darr;: move &nbsp; x: toggle active/inactive &nbsp; a: launch apply (dry-run) &nbsp; Shift+A: launch real apply (no dry-run) &nbsp; Shift+R: use real resume &nbsp; Shift+G: use generic cover letter &nbsp; click row to select &nbsp; click a column header to sort</div>
+  <div id="help">j/k or &uarr;/&darr;: move &nbsp; x: toggle active/inactive &nbsp; a: launch apply (dry-run) &nbsp; Shift+A: launch real apply (no dry-run) &nbsp; Shift+M: mark applied manually &nbsp; Shift+R: use real resume &nbsp; Shift+G: use generic cover letter &nbsp; click row to select &nbsp; click a column header to sort</div>
   <div id="toolbar">
     <div id="scores"></div>
     <input id="search" type="text" placeholder="Search all job fields...">
@@ -1054,6 +1110,22 @@ async function useRealResume() {
   showStatus(data.trello_error ? `Trello sync failed: ${data.trello_error}` : 'Resume set to your real resume.', !!data.trello_error);
 }
 
+async function markAppliedManually() {
+  const j = visible.find(j => j.id === selectedId);
+  if (!j) return;
+  const res = await fetch(`/api/jobs/${j.id}/mark-applied-manually`, { method: 'POST' });
+  const data = await res.json();
+  if (data.error) {
+    showStatus(`Mark applied failed: ${data.error}`, true);
+    return;
+  }
+  j.apply_status = 'applied';
+  j.applied_at = data.applied_at;
+  j.apply_error = null;
+  applyFilter();
+  showStatus(data.trello_error ? `Trello sync failed: ${data.trello_error}` : 'Marked as applied manually.', !!data.trello_error);
+}
+
 async function useGenericCoverLetter() {
   const j = visible.find(j => j.id === selectedId);
   if (!j) return;
@@ -1186,6 +1258,7 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'x') { e.preventDefault(); toggleActive(); }
   else if (e.key === 'a') { e.preventDefault(); launchApply(); }
   else if (e.key === 'A') { e.preventDefault(); launchRealApply(); }
+  else if (e.key === 'M') { e.preventDefault(); markAppliedManually(); }
   else if (e.key === 'R') { e.preventDefault(); useRealResume(); }
   else if (e.key === 'G') { e.preventDefault(); useGenericCoverLetter(); }
 });
