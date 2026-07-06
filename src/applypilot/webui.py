@@ -669,8 +669,28 @@ function saveHideFilters() {
 const storedHideFilters = loadStoredHideFilters();
 let hideInactive = storedHideFilters ? !!storedHideFilters.hideInactive : false;
 let hideApplied = storedHideFilters ? !!storedHideFilters.hideApplied : false;
-let sortKey = 'fit_score';
-let sortDir = -1;
+
+const SORT_STORAGE_KEY = 'applypilot_sort';
+
+function loadStoredSort() {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj.sortKey !== 'string' || (obj.sortDir !== 1 && obj.sortDir !== -1)) return null;
+    return COLUMNS.some(c => c.key === obj.sortKey) ? obj : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveSort() {
+  localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ sortKey, sortDir }));
+}
+
+const storedSort = loadStoredSort();
+let sortKey = storedSort ? storedSort.sortKey : 'fit_score';
+let sortDir = storedSort ? storedSort.sortDir : -1;
 
 const SCORES_STORAGE_KEY = 'applypilot_checked_scores';
 const SELECTED_JOB_STORAGE_KEY = 'applypilot_selected_job';
@@ -771,6 +791,7 @@ function buildHeader() {
       th.addEventListener('click', () => {
         if (sortKey === col.key) sortDir *= -1;
         else { sortKey = col.key; sortDir = 1; }
+        saveSort();
         render();
       });
       if (sortKey === col.key) {
