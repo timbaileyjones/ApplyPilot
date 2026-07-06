@@ -14,11 +14,42 @@ log = logging.getLogger(__name__)
 
 # ── Resume Parser ────────────────────────────────────────────────────────
 
+# Recognized section headers, keyed by canonical name used in `sections`.
+# Matched case-insensitively so both the AI tailoring pipeline's strict
+# ALL-CAPS convention (EXPERIENCE, TECHNICAL SKILLS, ...) and a hand-written
+# master resume's Title Case headers (Work Experience, Technical Skills, ...)
+# parse the same way.
+_SECTION_ALIASES = {
+    "SUMMARY": "SUMMARY",
+    "OBJECTIVE": "SUMMARY",
+    "PROFESSIONAL SUMMARY": "SUMMARY",
+    "TECHNICAL SKILLS": "TECHNICAL SKILLS",
+    "SKILLS": "TECHNICAL SKILLS",
+    "EXPERIENCE": "EXPERIENCE",
+    "WORK EXPERIENCE": "EXPERIENCE",
+    "PROFESSIONAL EXPERIENCE": "EXPERIENCE",
+    "PROJECTS": "PROJECTS",
+    "SELECTED PROJECTS": "PROJECTS",
+    "EDUCATION": "EDUCATION",
+    "CERTIFICATIONS": "CERTIFICATIONS",
+    "CERTIFICATES": "CERTIFICATIONS",
+}
+
+
+def _section_header(line: str) -> str | None:
+    """Return the canonical section name if `line` is a recognized header, else None."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("-") or stripped.startswith("•") or len(stripped) <= 3:
+        return None
+    return _SECTION_ALIASES.get(stripped.upper())
+
+
 def parse_resume(text: str) -> dict:
     """Parse a structured text resume into sections.
 
     Expects a format with header lines (name, title, location, contact)
-    followed by ALL-CAPS section headers (SUMMARY, TECHNICAL SKILLS, etc.).
+    followed by section headers (SUMMARY, TECHNICAL SKILLS, etc. -- see
+    _SECTION_ALIASES for recognized spellings/casings).
 
     Args:
         text: Full resume text.
@@ -28,15 +59,24 @@ def parse_resume(text: str) -> dict:
     """
     lines = [line.rstrip() for line in text.strip().split("\n")]
 
-    # Header: first few lines before SUMMARY
+    # Header: leading non-blank lines, up to whichever comes first -- a
+    # recognized section header, or the first blank line after some header
+    # content. (Some resumes go straight into an unlabeled summary paragraph
+    # with no SUMMARY marker at all; the blank-line fallback keeps that from
+    # being swallowed whole as "header".)
     header_lines: list[str] = []
-    body_start = 0
+    body_start = len(lines)
     for i, line in enumerate(lines):
-        if line.strip().upper() == "SUMMARY":
+        if _section_header(line) is not None:
             body_start = i
             break
-        if line.strip():
-            header_lines.append(line.strip())
+        stripped = line.strip()
+        if not stripped:
+            if header_lines:
+                body_start = i
+                break
+            continue
+        header_lines.append(stripped)
 
     name = header_lines[0] if len(header_lines) > 0 else ""
     title = header_lines[1] if len(header_lines) > 1 else ""
@@ -53,30 +93,30 @@ def parse_resume(text: str) -> dict:
         else:
             location = header_lines[2]
 
-    # Split body into sections by ALL-CAPS headers
+    # Split body into sections by recognized headers. Seed with an implicit
+    # SUMMARY so an unlabeled leading paragraph (no SUMMARY marker) still
+    # lands somewhere instead of being silently dropped.
     sections: dict[str, str] = {}
-    current_section: str | None = None
+    current_section: str | None = "SUMMARY"
     current_lines: list[str] = []
 
+    def _flush() -> None:
+        if not current_section:
+            return
+        text = "\n".join(current_lines).strip()
+        if text:
+            sections[current_section] = text
+
     for line in lines[body_start:]:
-        stripped = line.strip()
-        # Detect section headers (all caps, no leading dash/bullet, longer than 3 chars)
-        if (
-            stripped
-            and stripped == stripped.upper()
-            and not stripped.startswith("-")
-            and len(stripped) > 3
-            and not stripped.startswith("\u2022")
-        ):
-            if current_section:
-                sections[current_section] = "\n".join(current_lines).strip()
-            current_section = stripped
+        canonical = _section_header(line)
+        if canonical is not None:
+            _flush()
+            current_section = canonical
             current_lines = []
         else:
             current_lines.append(line)
 
-    if current_section:
-        sections[current_section] = "\n".join(current_lines).strip()
+    _flush()
 
     return {
         "name": name,
@@ -195,6 +235,17 @@ def build_html(resume: dict) -> str:
     if "EDUCATION" in sections:
         edu_text = sections["EDUCATION"].strip()
         edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
+
+    # Certifications
+    cert_html = ""
+    if "CERTIFICATIONS" in sections:
+        cert_lines = [
+            line.strip().lstrip("•").strip()
+            for line in sections["CERTIFICATIONS"].split("\n")
+            if line.strip()
+        ]
+        items = "".join(f"<li>{c}</li>" for c in cert_lines)
+        cert_html = f'<div class="section"><div class="section-title">Certifications</div><ul>{items}</ul></div>'
 
     # Summary
     summary_html = ""
@@ -327,6 +378,7 @@ li {{
 {exp_html}
 {proj_html}
 {edu_html}
+{cert_html}
 </body>
 </html>"""
 
