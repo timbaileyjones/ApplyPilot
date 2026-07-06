@@ -612,6 +612,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <input id="search" type="text" placeholder="Search all job fields...">
     <label><input type="checkbox" id="hide-inactive"> Hide inactive</label>
     <label><input type="checkbox" id="hide-applied"> Hide applied</label>
+    <label><input type="checkbox" id="hide-failed"> Hide failed</label>
     <div id="trello-status"></div>
     <div id="count"></div>
   </div>
@@ -679,12 +680,13 @@ function loadStoredHideFilters() {
 }
 
 function saveHideFilters() {
-  localStorage.setItem(HIDE_FILTERS_STORAGE_KEY, JSON.stringify({ hideInactive, hideApplied }));
+  localStorage.setItem(HIDE_FILTERS_STORAGE_KEY, JSON.stringify({ hideInactive, hideApplied, hideFailed }));
 }
 
 const storedHideFilters = loadStoredHideFilters();
 let hideInactive = storedHideFilters ? !!storedHideFilters.hideInactive : false;
 let hideApplied = storedHideFilters ? !!storedHideFilters.hideApplied : false;
+let hideFailed = storedHideFilters ? !!storedHideFilters.hideFailed : false;
 
 const SORT_STORAGE_KEY = 'applypilot_sort';
 
@@ -876,6 +878,7 @@ function applyFilter() {
     if (!checkedScores.has(j.fit_score)) return false;
     if (hideInactive && !j.active) return false;
     if (hideApplied && statusOf(j) === 'applied') return false;
+    if (hideFailed && statusOf(j) === 'failed') return false;
     if (searchIds !== null && !searchIds.has(j.id)) return false;
     return true;
   });
@@ -1165,6 +1168,13 @@ document.getElementById('hide-inactive').addEventListener('change', (e) => {
 document.getElementById('hide-applied').checked = hideApplied;
 document.getElementById('hide-applied').addEventListener('change', (e) => {
   hideApplied = e.target.checked;
+  saveHideFilters();
+  applyFilter();
+});
+
+document.getElementById('hide-failed').checked = hideFailed;
+document.getElementById('hide-failed').addEventListener('change', (e) => {
+  hideFailed = e.target.checked;
   saveHideFilters();
   applyFilter();
 });
