@@ -110,6 +110,8 @@ def _build_card_desc(job: dict, job_id: int) -> str:
     status = job.get("apply_status") or "not applied"
     if status == "applied" and job.get("apply_method"):
         status = f"{status} ({job['apply_method']})"
+    if job.get("review_later_at"):
+        status = f"{status} | **Review later:** flagged {job['review_later_at'][:10]}"
     discovered = (job.get("discovered_at") or "")[:10]
     url = job.get("url") or ""
     app_url = job.get("application_url") or url

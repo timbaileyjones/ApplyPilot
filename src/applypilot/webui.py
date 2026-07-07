@@ -43,6 +43,7 @@ _CARD_FIELDS = (
     "company", "title", "location", "salary", "fit_score", "site",
     "apply_status", "apply_method", "discovered_at", "url", "application_url",
     "score_reasoning", "tailored_resume_path", "cover_letter_path", "trello_card_id",
+    "review_later_at",
 )
 
 # Every TEXT column on jobs -- searched server-side so the client never has to
@@ -79,6 +80,7 @@ def _row_to_dict(row) -> dict:
         "detail_error": row["detail_error"],
         "strategy": row["strategy"],
         "active": bool(row["active"] if row["active"] is not None else True),
+        "review_later_at": row["review_later_at"],
     }
 
 
@@ -96,7 +98,8 @@ def create_app() -> Flask:
             "SELECT rowid, url, title, company, site, location, salary, fit_score, "
             "score_reasoning, discovered_at, application_url, strategy, "
             "apply_error, detail_error, "
-            "tailored_resume_path, cover_letter_path, applied_at, apply_status, active "
+            "tailored_resume_path, cover_letter_path, applied_at, apply_status, active, "
+            "review_later_at "
             "FROM jobs WHERE fit_score IS NOT NULL "
             "ORDER BY fit_score DESC, title"
         ).fetchall()
@@ -243,6 +246,34 @@ def create_app() -> Flask:
         job["apply_method"] = "manual"
         result = {"id": job_id, "applied_at": now}
         trello_error = _sync_trello_card_manual_apply(conn, job_id, job)
+        if trello_error:
+            result["trello_error"] = trello_error
+        return jsonify(result)
+
+    @app.post("/api/jobs/<int:job_id>/review-later")
+    def toggle_review_later(job_id: int):
+        """Toggle the review-later flag. NULL = not flagged; a timestamp means
+        flagged (and doubles as queue order -- sort the Review column ascending
+        to go through flagged jobs in the order they were flagged).
+        """
+        conn = get_connection()
+        row = conn.execute(
+            f"SELECT {', '.join(_CARD_FIELDS)} FROM jobs WHERE rowid = ?", (job_id,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"id": job_id, "error": "Job not found"}), 404
+        job = dict(row)
+
+        flagging = not job.get("review_later_at")
+        now = datetime.now(timezone.utc).isoformat() if flagging else None
+        conn.execute(
+            "UPDATE jobs SET review_later_at = ? WHERE rowid = ?", (now, job_id)
+        )
+        conn.commit()
+
+        job["review_later_at"] = now
+        result = {"id": job_id, "review_later_at": now}
+        trello_error = _sync_trello_card_review_later(conn, job_id, job, flagging)
         if trello_error:
             result["trello_error"] = trello_error
         return jsonify(result)
@@ -593,6 +624,37 @@ def _sync_trello_card_manual_apply(conn, job_id: int, job: dict) -> str | None:
         return str(e)
 
 
+def _sync_trello_card_review_later(conn, job_id: int, job: dict, flagging: bool) -> str | None:
+    """Comment on and refresh the job's Trello card when the review-later flag
+    is toggled either way -- unlike the active/inactive toggle, this always
+    creates the card (rather than only touching existing ones) since the user
+    wants review-later jobs represented in Trello regardless of prior state.
+
+    Returns an error message on failure, or None on success / when Trello
+    isn't configured.
+    """
+    if not trello.is_configured():
+        return None
+
+    try:
+        card_id = trello.get_or_create_card(job, job_id)
+        if card_id != job.get("trello_card_id"):
+            conn.execute("UPDATE jobs SET trello_card_id = ? WHERE rowid = ?", (card_id, job_id))
+            conn.commit()
+        else:
+            trello.update_card_desc(card_id, job, job_id)
+
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if flagging:
+            trello.add_comment(card_id, f"Flagged for review later at {now}.")
+        else:
+            trello.add_comment(card_id, f"Review-later flag cleared at {now}.")
+        return None
+    except Exception as e:
+        log.error("Trello review-later sync failed for job %d: %s", job_id, e)
+        return str(e)
+
+
 def run_server(port: int = 4000) -> None:
     """Start the review web UI, blocking the current thread until Ctrl+C.
 
@@ -662,13 +724,14 @@ INDEX_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <div id="help">j/k or &uarr;/&darr;: move &nbsp; x: toggle active/inactive &nbsp; a: launch apply (dry-run) &nbsp; Shift+A: launch real apply (no dry-run) &nbsp; Shift+M: mark applied manually &nbsp; Shift+R: use real resume &nbsp; Shift+G: use generic cover letter &nbsp; click row to select &nbsp; click a column header to sort</div>
+  <div id="help">j/k or &uarr;/&darr;: move &nbsp; x: toggle active/inactive &nbsp; l: toggle review later &nbsp; a: launch apply (dry-run) &nbsp; Shift+A: launch real apply (no dry-run) &nbsp; Shift+M: mark applied manually &nbsp; Shift+R: use real resume &nbsp; Shift+G: use generic cover letter &nbsp; click row to select &nbsp; click a column header to sort</div>
   <div id="toolbar">
     <div id="scores"></div>
     <input id="search" type="text" placeholder="Search all job fields...">
     <label><input type="checkbox" id="hide-inactive"> Hide inactive</label>
     <label><input type="checkbox" id="hide-applied"> Hide applied</label>
     <label><input type="checkbox" id="hide-failed"> Hide failed</label>
+    <label><input type="checkbox" id="hide-review-later"> Hide review later</label>
     <div id="trello-status"></div>
     <div id="count"></div>
   </div>
@@ -712,6 +775,8 @@ const COLUMNS = [
     render: j => j.has_direct_url ? '<span title="Direct apply link available">✓</span>' : '<span title="Falls back to listing URL" style="color:#c66">✗</span>' },
   { key: 'status', label: 'Status', type: 'string', render: j => escapeHtml(statusOf(j)) },
   { key: 'active', label: 'Active', type: 'bool', render: j => j.active ? 'yes' : 'no' },
+  { key: 'review_later_at', label: 'Review', type: 'string',
+    render: j => j.review_later_at ? `<span title="Flagged ${escapeHtml(j.review_later_at)}">★</span>` : '' },
   { key: null, label: 'Open', type: null,
     render: j => j.url ? `<a class="open-link" href="${escapeHtml(j.url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">↗</a>` : '' },
 ];
@@ -736,13 +801,14 @@ function loadStoredHideFilters() {
 }
 
 function saveHideFilters() {
-  localStorage.setItem(HIDE_FILTERS_STORAGE_KEY, JSON.stringify({ hideInactive, hideApplied, hideFailed }));
+  localStorage.setItem(HIDE_FILTERS_STORAGE_KEY, JSON.stringify({ hideInactive, hideApplied, hideFailed, hideReviewLater }));
 }
 
 const storedHideFilters = loadStoredHideFilters();
 let hideInactive = storedHideFilters ? !!storedHideFilters.hideInactive : false;
 let hideApplied = storedHideFilters ? !!storedHideFilters.hideApplied : false;
 let hideFailed = storedHideFilters ? !!storedHideFilters.hideFailed : false;
+let hideReviewLater = storedHideFilters ? !!storedHideFilters.hideReviewLater : false;
 
 const SORT_STORAGE_KEY = 'applypilot_sort';
 
@@ -935,6 +1001,7 @@ function applyFilter() {
     if (hideInactive && !j.active) return false;
     if (hideApplied && statusOf(j) === 'applied') return false;
     if (hideFailed && statusOf(j) === 'failed') return false;
+    if (hideReviewLater && j.review_later_at) return false;
     if (searchIds !== null && !searchIds.has(j.id)) return false;
     return true;
   });
@@ -1100,6 +1167,20 @@ async function toggleActive() {
   showStatus(data.trello_error ? `Trello sync failed: ${data.trello_error}` : '');
 }
 
+async function toggleReviewLater() {
+  const j = visible.find(j => j.id === selectedId);
+  if (!j) return;
+  const res = await fetch(`/api/jobs/${j.id}/review-later`, { method: 'POST' });
+  const data = await res.json();
+  if (data.error) {
+    showStatus(`Toggle review-later failed: ${data.error}`, true);
+    return;
+  }
+  j.review_later_at = data.review_later_at;
+  applyFilter();
+  showStatus(data.trello_error ? `Trello sync failed: ${data.trello_error}` : '');
+}
+
 async function useRealResume() {
   const j = visible.find(j => j.id === selectedId);
   if (!j) return;
@@ -1251,11 +1332,19 @@ document.getElementById('hide-failed').addEventListener('change', (e) => {
   applyFilter();
 });
 
+document.getElementById('hide-review-later').checked = hideReviewLater;
+document.getElementById('hide-review-later').addEventListener('change', (e) => {
+  hideReviewLater = e.target.checked;
+  saveHideFilters();
+  applyFilter();
+});
+
 document.addEventListener('keydown', (e) => {
   if (document.activeElement && document.activeElement.id === 'search') return;
   if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
   else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1); }
   else if (e.key === 'x') { e.preventDefault(); toggleActive(); }
+  else if (e.key === 'l') { e.preventDefault(); toggleReviewLater(); }
   else if (e.key === 'a') { e.preventDefault(); launchApply(); }
   else if (e.key === 'A') { e.preventDefault(); launchRealApply(); }
   else if (e.key === 'M') { e.preventDefault(); markAppliedManually(); }

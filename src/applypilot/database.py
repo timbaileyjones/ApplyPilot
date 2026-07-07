@@ -185,6 +185,9 @@ _ALL_COLUMNS: dict[str, str] = {
     "apply_method": "TEXT",  # 'automated' (agent-driven) or 'manual' (marked applied by hand)
     # Web review UI
     "active": "INTEGER DEFAULT 1",
+    # NULL = not flagged; timestamp = when flagged, doubling as the "review in
+    # this order" queue position (sort by this column ascending).
+    "review_later_at": "TEXT",
 }
 
 
