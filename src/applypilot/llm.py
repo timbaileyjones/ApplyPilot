@@ -7,6 +7,15 @@ Auto-detects provider from environment:
   LLM_URL         -> Local llama.cpp / Ollama compatible endpoint
 
 LLM_MODEL env var overrides the model name for any provider.
+
+Two task tiers allow a hybrid setup (cheap local model for high-volume
+work, hosted model where prose quality matters):
+
+  "bulk"    -- scoring, extraction, enrichment, tailoring (the default).
+               When LLM_URL is set it wins over any API keys.
+  "quality" -- cover letters. Prefers GEMINI_API_KEY/OPENAI_API_KEY even
+               when LLM_URL is set; LLM_QUALITY_MODEL overrides its model.
+               Falls back to the bulk provider when no API key is set.
 """
 
 import json
@@ -77,20 +86,40 @@ def _log_response(text: str) -> None:
 # Provider detection
 # ---------------------------------------------------------------------------
 
-def _detect_provider() -> tuple[str, str, str]:
+def _detect_provider(task: str = "bulk") -> tuple[str, str, str]:
     """Return (base_url, model, api_key) based on environment variables.
 
     Reads env at call time (not module import time) so that load_env() called
     in _bootstrap() is always visible here.
+
+    task="bulk": LLM_URL wins over API keys (high-volume work stays local).
+    task="quality": API keys win over LLM_URL (prose quality over cost);
+    falls back to the bulk provider when no API key is set.
     """
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     local_url = os.environ.get("LLM_URL", "")
     model_override = os.environ.get("LLM_MODEL", "")
 
+    if task == "quality":
+        quality_model = os.environ.get("LLM_QUALITY_MODEL", "")
+        if gemini_key:
+            return (
+                _GEMINI_COMPAT_BASE,
+                quality_model or model_override or "gemini-2.0-flash",
+                gemini_key,
+            )
+        if openai_key:
+            return (
+                "https://api.openai.com/v1",
+                quality_model or model_override or "gpt-4o-mini",
+                openai_key,
+            )
+        # No hosted key -- fall through to the bulk provider.
+
     if gemini_key and not local_url:
         return (
-            "https://generativelanguage.googleapis.com/v1beta/openai",
+            _GEMINI_COMPAT_BASE,
             model_override or "gemini-2.0-flash",
             gemini_key,
         )
@@ -279,11 +308,20 @@ class LLMClient:
     ) -> str:
         """Send a chat completion request and return the assistant message text."""
         # Qwen3 optimization: prepend /no_think to skip chain-of-thought
-        # reasoning, saving tokens on structured extraction tasks.
-        if "qwen" in self.model.lower() and messages:
-            first = messages[0]
-            if first.get("role") == "user" and not first["content"].startswith("/no_think"):
-                messages = [{"role": first["role"], "content": f"/no_think\n{first['content']}"}] + messages[1:]
+        # reasoning, saving tokens on structured extraction tasks. Applied to
+        # the first user message wherever it sits (call sites put a system
+        # message first).
+        if "qwen" in self.model.lower():
+            for i, msg in enumerate(messages):
+                if msg.get("role") != "user":
+                    continue
+                if not msg["content"].startswith("/no_think"):
+                    messages = (
+                        messages[:i]
+                        + [{"role": "user", "content": f"/no_think\n{msg['content']}"}]
+                        + messages[i + 1:]
+                    )
+                break
 
         _log_request(messages)
         for attempt in range(_MAX_RETRIES):
@@ -381,14 +419,18 @@ class _GeminiCompatForbidden(Exception):
 # Singleton
 # ---------------------------------------------------------------------------
 
-_instance: LLMClient | None = None
+_instances: dict[str, LLMClient] = {}
 
 
-def get_client() -> LLMClient:
-    """Return (or create) the module-level LLMClient singleton."""
-    global _instance
-    if _instance is None:
-        base_url, model, api_key = _detect_provider()
-        log.info("LLM provider: %s  model: %s", base_url, model)
-        _instance = LLMClient(base_url, model, api_key)
-    return _instance
+def get_client(task: str = "bulk") -> LLMClient:
+    """Return (or create) the LLMClient singleton for a task tier.
+
+    task="bulk" (default) for high-volume work; task="quality" for
+    cover letters and anything else where prose quality matters.
+    """
+    client = _instances.get(task)
+    if client is None:
+        base_url, model, api_key = _detect_provider(task)
+        log.info("LLM provider (%s): %s  model: %s", task, base_url, model)
+        client = _instances[task] = LLMClient(base_url, model, api_key)
+    return client
